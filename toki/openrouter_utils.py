@@ -32,11 +32,11 @@ def _get_openrouter_models(api_key: str) -> list[dict]:
     return data
 
 
-_DEFAULT_API_KEY = get_openrouter_api_key()
-def _create_models_types_file(api_key: str = _DEFAULT_API_KEY, file: PathLike = here / 'openrouter_models.py'):
+def _create_models_types_file(api_key:str|None = None, file:PathLike = here / 'openrouter_models.py'):
     """
     Dev helper tool: create a file with a type declaration `ModelName` containing all OpenRouter models.
     """
+    if api_key is None: api_key = get_openrouter_api_key()
     file = Path(file)
     models = _get_openrouter_models(api_key)
     models.sort(key=lambda x: x['id'])
