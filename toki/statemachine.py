@@ -9,7 +9,7 @@ TBD which is better, both seem to have pros and cons:
 - class based looks cleaner, though is less flexible. E.g. say you want to have many versions of the same state machine,
   but each with slightly different initializations, it gets messy since there's only one __init__ function.
   more concrete example: for the market scenario, the original version ran several benign buyer rounds before getting to
-  the illegal buyer round. Then I made the bootstrap version which skips immedately to the illegal buyer round.
+  the illegal buyer round. Then I made the bootstrap version which skips immediately to the illegal buyer round.
   Using the class based version, it's not straightforward to swap between those two use cases without having a convoluted
   __init__ function.
 - function+context based is more flexible, but a bit less cohesive. Basically you're just constructing all the parts used
@@ -162,7 +162,7 @@ class ClassStateMachine(Generic[E, C]):
 if __name__ == "__main__":
     from enum import Enum, auto
     from dataclasses import dataclass
-    # from .agentic import on, StateMachine, EndState, END_STATE
+    from toki.statemachine import on, StateMachine, EndState, END_STATE
 
     class State(Enum):
         A = auto()
@@ -197,7 +197,7 @@ if __name__ == "__main__":
 ######################### example usage of class state machine #########################
 if __name__ == "__main__":
     from enum import Enum, auto
-    # from .agentic import on, ClassStateMachine, EndState, END_STATE
+    from toki.statemachine import on, ClassStateMachine, EndState, END_STATE
     
     class State(Enum):
         A = auto()

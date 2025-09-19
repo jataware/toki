@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "David Samson", email = "david@jataware.com" }
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "requests>=2.32.5",
     "typing-extensions>=4.15.0",
