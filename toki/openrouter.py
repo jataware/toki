@@ -104,7 +104,6 @@ class Model:
     def _blocking_complete(self, messages: list[OpenRouterMessage], tools:list|None=None, **kwargs) -> str | OpenRouterToolResponse:
         tool_payload = {"tools": tools, "parallel_tool_calls": self.allow_parallel_tool_calls, 'tool_choice': {"type": "function", "function": {"name": "test_tool"}}} if tools else {}
         payload = {"model": self.model, "messages": messages, **tool_payload, **kwargs}
-        print(f'{kwargs=}, {tool_payload=}')
         response = requests.post(
             url="https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {self.openrouter_api_key}"},
