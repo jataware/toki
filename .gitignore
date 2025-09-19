@@ -3,3 +3,8 @@ dist/
 
 # python files
 __pycache__/
+
+
+# autoenv files
+.autoenv
+.autoleave
