@@ -19,6 +19,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["toki"]
 
+[dependency-groups]
+dev = [
+    "easyrepl>=0.1.5",
+]
+
 [project.scripts]
 # Developer utility to regenerate the OpenRouter models file
 "toki-fetch-models" = "toki.openrouter_utils:_create_models_types_file"

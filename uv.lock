@@ -76,6 +76,15 @@ wheels = [
 ]
 
 [[package]]
+name = "easyrepl"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/78/0f307326020af8a51d3280d7e30bf91feeeb6f66a3da6839ad422dc34374/easyrepl-0.1.5.tar.gz", hash = "sha256:c9610a6a1d6760cd3a8ca3255b75e8f12c83367597a03d96c16edee9f972039f", size = 4082 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/f1/7ba1f4d69a00127862f0c1df6b36537ca36ead2a34b1db9ed2e1b5a9c954/easyrepl-0.1.5-py3-none-any.whl", hash = "sha256:1d27e47cc9bd408d7e1832ffc19a827d429ed31f39047553e364a0fdcce26c6a", size = 4684 },
+]
+
+[[package]]
 name = "idna"
 version = "3.10"
 source = { registry = "https://pypi.org/simple" }
@@ -108,11 +117,19 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "easyrepl" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "requests", specifier = ">=2.32.5" },
     { name = "typing-extensions", specifier = ">=4.15.0" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "easyrepl", specifier = ">=0.1.5" }]
 
 [[package]]
 name = "typing-extensions"
