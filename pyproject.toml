@@ -1,6 +1,6 @@
 [project]
 name = "toki"
-version = "0.0.0"
+version = "0.2.0"
 description = "Minimal universal LLM interface API"
 readme = "README.md"
 authors = [
