@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 from .openrouter_models import ModelName, attributes_map
 
-import pdb
 
 Role = Literal["user", "assistant", 'system', 'tool']
 
@@ -111,7 +110,6 @@ class Model:
         )
         data = cast(OpenRouterResponse|OpenRouterResponseError, response.json())
         if 'error' in data:
-            pdb.set_trace()
             raise ValueError(f"Error from OpenRouter: {data}")
         try:
             self._usage_metadata = cast(OpenRouterUsageMetadata, data['usage'])
