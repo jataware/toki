@@ -1,16 +1,10 @@
 import requests
 import json
-from typing import Generator, Literal, overload, TypedDict, Any, Optional, Sequence, cast, Generic, TypeVar
+from typing import Generator, Literal, overload, TypedDict, Any, cast, Generic, TypeVar
 from typing_extensions import NotRequired
-from pathlib import Path
-from functools import lru_cache
-import logging
-
-here = Path(__file__).parent
-logger = logging.getLogger(__name__)
 
 
-from .openrouter_models import ModelName, attributes_map
+from .openrouter_models import ModelName
 
 
 Role = Literal["user", "assistant", 'system', 'tool']
@@ -101,12 +95,12 @@ class Model:
     @overload
     def _blocking_complete(self, messages: list[OpenRouterMessage], tools:list, **kwargs) -> str | OpenRouterToolResponse: ...
     def _blocking_complete(self, messages: list[OpenRouterMessage], tools:list|None=None, **kwargs) -> str | OpenRouterToolResponse:
-        tool_payload = {"tools": tools, "parallel_tool_calls": self.allow_parallel_tool_calls, 'tool_choice': {"type": "function", "function": {"name": "test_tool"}}} if tools else {}
+        tool_payload = {"tools": tools, "parallel_tool_calls": self.allow_parallel_tool_calls} if tools else {}
         payload = {"model": self.model, "messages": messages, **tool_payload, **kwargs}
         response = requests.post(
             url="https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {self.openrouter_api_key}"},
-            data=json.dumps(payload)
+            headers={"Authorization": f"Bearer {self.openrouter_api_key}", "Content-Type": "application/json"},
+            json=payload
         )
         data = cast(OpenRouterResponse|OpenRouterResponseError, response.json())
         if 'error' in data:
@@ -133,7 +127,7 @@ class Model:
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
-        tool_payload = {"tools": tools, "parallel_tool_calls": False} if tools else {}
+        tool_payload = {"tools": tools, "parallel_tool_calls": self.allow_parallel_tool_calls} if tools else {}
         payload = {"model": self.model, "messages": messages, "stream": True, **tool_payload, **kwargs}
 
         with requests.post(url, headers=headers, json=payload, stream=True, timeout=(10, 60)) as r:
