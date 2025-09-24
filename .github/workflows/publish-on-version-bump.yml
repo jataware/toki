@@ -1,0 +1,70 @@
+name: Publish to PyPI on version bump (uv, minimal)
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - pyproject.toml
+
+permissions:
+  contents: read
+  id-token: write   # Required for PyPI Trusted Publisher (OIDC)
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Need at least the previous commit to compare against
+          fetch-depth: 2
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Detect version change by checking out previous commit
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          OLD="${{ github.event.before }}"
+          CUR="${{ github.sha }}"
+
+          # If there's nothing to compare to, skip publishing
+          if [ -z "${OLD}" ] || [ "${OLD}" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${OLD}^{commit}" 2>/dev/null; then
+            echo "No previous commit to compare to; skipping publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Version at current commit (HEAD)
+          NEW_VERSION=$(uv version | awk '{print $2}')
+          echo "Current version (HEAD): ${NEW_VERSION}"
+
+          # Hop to previous commit, get version, then hop back
+          git -c advice.detachedHead=false checkout --force "${OLD}"
+          OLD_VERSION=$(uv version | awk '{print $2}' || true)
+          echo "Previous version: ${OLD_VERSION}"
+          git -c advice.detachedHead=false checkout --force "${CUR}"
+
+          # Decide whether to publish
+          if [ -n "${OLD_VERSION}" ] && [ -n "${NEW_VERSION}" ] && [ "${OLD_VERSION}" != "${NEW_VERSION}" ]; then
+            echo "Detected version bump: ${OLD_VERSION} -> ${NEW_VERSION}"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No version bump detected; skipping publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build distributions (uv)
+        if: steps.detect.outputs.publish == 'true'
+        run: uv build --no-sources
+
+      - name: Publish to PyPI (uv Trusted Publisher)
+        if: steps.detect.outputs.publish == 'true'
+        env:
+          # No token is needed when PyPI Trusted Publisher is configured for this repo
+          UV_NO_WRAP: 1
+        run: uv publish
