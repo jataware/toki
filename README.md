@@ -204,11 +204,9 @@ print(attr.context_size, attr.supports_tools)
 ## Backends
 OpenRouter is the primary backend, exposing many vendor models behind one API. Switching models usually requires only changing the model string.
 
-## Known issues
-- OpenAI models currently fail when tools are included via OpenRouter and only work reliably in text-only mode. If you depend on tools, prefer non-OpenAI models that work with tools through OpenRouter, and test your target model first.
-
 ## Development
 - Python ≥ 3.10
 - Optional dev deps: `pip install 'toki[dev]'`
 - Useful scripts:
   - `toki-fetch-models` – regenerate model types from OpenRouter
+  - `uv version --bump <level>` where `<level>` is one of `major`, `minor`, or `patch`
