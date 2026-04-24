@@ -2,22 +2,28 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/toki.svg)](https://pypi.org/project/toki/)
 
-Minimal, universal Python interface for talking to LLMs via OpenRouter.
+Minimal, universal Python interface for talking to LLMs across backends.
 
-Switch models by name (e.g., `openai/gpt-5` → `google/gemini-2.5-pro`) and keep the same code path. Toki provides a tiny surface:
-- `Model` for direct chat completions (blocking and streaming)
-- `Agent` for conversation history (with optional tool-calling)
+Pick a backend (e.g. OpenRouter, local `transformers`) and keep the same code path. Toki provides a tiny surface:
+- `Model` for direct chat completions (blocking and streaming) — one concrete class per backend, all sharing the `BaseModel` interface
+- `Agent` for conversation history (with optional tool-calling), works with any `Model`
 - `StateMachine` and `ClassStateMachine` for simple agentic flows
 
-Browse all available models on OpenRouter: [openrouter.ai/models](https://openrouter.ai/models).
+Browse all OpenRouter models: [openrouter.ai/models](https://openrouter.ai/models).
 
 ## Install
+Backend deps are split into extras. Install only what you need:
+
 ```bash
-pip install toki
+pip install 'toki[openrouter]'     # OpenRouter HTTP API
+pip install 'toki[local]'          # local models via transformers + torch
+pip install 'toki[all]'            # everything
 ```
 
+Plain `pip install toki` installs only the backend-agnostic core (`BaseModel`, `Agent`, types, state machines).
+
 ## Configure
-Toki uses OpenRouter. Set your API key:
+The OpenRouter backend needs an API key:
 
 ```bash
 export OPENROUTER_API_KEY=...  # https://openrouter.ai/
@@ -26,15 +32,16 @@ export OPENROUTER_API_KEY=...  # https://openrouter.ai/
 Or retrieve it in code:
 
 ```python
-from toki import get_openrouter_api_key
+from toki.openrouter import get_openrouter_api_key
 api_key = get_openrouter_api_key()  # raises if not set
 ```
 
 ## Quickstart
 
-### Blocking completion
+### Blocking completion (OpenRouter)
 ```python
-from toki import Model, Agent, get_openrouter_api_key
+from toki import Agent
+from toki.openrouter import Model, get_openrouter_api_key
 
 model = Model('openai/gpt-5', get_openrouter_api_key())
 agent = Agent(model)
@@ -44,9 +51,10 @@ result = agent.execute()            # returns str
 print(result)
 ```
 
-### Streaming completion
+### Streaming completion (OpenRouter)
 ```python
-from toki import Model, Agent, get_openrouter_api_key
+from toki import Agent
+from toki.openrouter import Model, get_openrouter_api_key
 
 model = Model('google/gemini-2.5-pro', get_openrouter_api_key())
 agent = Agent(model)
@@ -57,6 +65,18 @@ for chunk in agent.execute(stream=True):  # yields str chunks
 print()
 ```
 
+### Local model (transformers)
+```python
+from toki import Agent
+from toki.local import Model
+
+model = Model('Qwen/Qwen3-0.6B')    # any HF causal-LM repo id or local path
+agent = Agent(model)
+
+agent.add_user_message("Say hello in 5 words")
+print(agent.execute())
+```
+
 ## Tools (function calling)
 Toki can pass OpenRouter-compatible tool schemas to the model. When a tool call is returned, you execute your function(s), then send tool responses back to the model via the `Agent`.
 
@@ -65,7 +85,8 @@ See OpenRouter’s tool-calling docs for the official schema and flow: [Tool & F
 Blocking example:
 ```python
 import json
-from toki import Model, Agent, get_openrouter_api_key
+from toki import Agent
+from toki.openrouter import Model, get_openrouter_api_key
 
 tools = [
     {
@@ -180,11 +201,11 @@ for s in sm.run(State.A):
 ```
 
 ## Models and Types
-- Model names are strongly typed via `ModelName` (generated from OpenRouter).
+- OpenRouter model names are strongly typed via `ModelName` (generated from the live OpenRouter model list).
 - To view available models at runtime:
 
 ```python
-from toki.openrouter_utils import list_openrouter_models, get_openrouter_api_key
+from toki.openrouter import list_openrouter_models, get_openrouter_api_key
 
 models = list_openrouter_models(get_openrouter_api_key())
 print(len(models), "models")
@@ -192,17 +213,23 @@ print(models[:10])
 ```
 
 ### Getting model attributes
-Each generated model has metadata in `toki.openrouter_models.attributes_map`, including context window and whether the model supports tools (as reported by OpenRouter):
+Each generated OpenRouter model has metadata in `toki.openrouter.attributes_map`, including context window and whether the model supports tools (as reported by OpenRouter):
 
 ```python
-from toki.openrouter_models import attributes_map
+from toki.openrouter import attributes_map
 
 attr = attributes_map['google/gemini-2.5-pro']
 print(attr.context_size, attr.supports_tools)
 ```
 
 ## Backends
-OpenRouter is the primary backend, exposing many vendor models behind one API. Switching models usually requires only changing the model string.
+Each backend lives under its own submodule and exposes a `Model` class that implements `toki.BaseModel`. Pick the one you want:
+
+- `toki.openrouter` — hosted models via the OpenRouter HTTP API (install `toki[openrouter]`)
+- `toki.local` — local models via HuggingFace `transformers` + `torch` (install `toki[local]`)
+- `toki.openai`, `toki.google`, `toki.anthropic`, `toki.ollama` — not yet implemented
+
+`Agent` is backend-agnostic and accepts any `Model`. If you're writing a new backend, subclass `toki.BaseModel` and implement `_blocking_complete` and `_streaming_complete`.
 
 ## Development
 - Python ≥ 3.10

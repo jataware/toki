@@ -8,9 +8,17 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "requests>=2.32.5",
     "typing-extensions>=4.15.0",
 ]
+
+[project.optional-dependencies]
+openrouter = ["requests>=2.32.5"]
+local = ["torch>=2.0", "transformers>=4.40"]
+openai = []
+google = []
+anthropic = []
+ollama = []
+all = ["toki[openrouter,local,openai,google,anthropic,ollama]"]
 
 [project.urls]
 "Repository" = "https://github.com/jataware/toki"
@@ -29,4 +37,4 @@ dev = [
 
 [project.scripts]
 # Developer utility to regenerate the OpenRouter models file
-"toki-fetch-models" = "toki.openrouter_utils:_create_models_types_file"
+"toki-fetch-models" = "toki.openrouter.utils:_create_models_types_file"
