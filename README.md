@@ -9,6 +9,8 @@ Pick a backend (e.g. OpenRouter, local `transformers`) and keep the same code pa
 - `Agent` for conversation history (with optional tool-calling), works with any `Model`
 - `StateMachine` and `ClassStateMachine` for simple agentic flows
 
+Toki targets instruction-tuned chat models — anything that ships a tokenizer `chat_template` (Qwen-Instruct, Llama-Instruct, Gemma-`-it`, etc.). Base / pretrained-only checkpoints aren't supported; for raw text continuation, use `transformers` directly.
+
 Browse all OpenRouter models: [openrouter.ai/models](https://openrouter.ai/models).
 
 ## Install

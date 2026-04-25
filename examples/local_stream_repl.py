@@ -4,7 +4,7 @@ from toki import Agent
 from toki.local import Model
 
 
-model = Model("Qwen/Qwen3-1.7B")
+model = Model("google/gemma-4-E2B-it")
 agent = Agent(model)
 
 for query in REPL(history=".chat"):

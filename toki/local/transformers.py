@@ -19,6 +19,11 @@ class Model(BaseModel):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.tokenizer = AutoTokenizer.from_pretrained(model)
+        if self.tokenizer.chat_template is None:
+            raise ValueError(
+                f"'{model}' has no chat template; toki targets instruction-tuned chat models. "
+                f"Try the '-it' / '-Instruct' variant of this model if one exists."
+            )
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 

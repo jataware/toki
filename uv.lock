@@ -198,11 +198,11 @@ nvtx = [
 
 [[package]]
 name = "easyrepl"
-version = "0.1.5"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/73/78/0f307326020af8a51d3280d7e30bf91feeeb6f66a3da6839ad422dc34374/easyrepl-0.1.5.tar.gz", hash = "sha256:c9610a6a1d6760cd3a8ca3255b75e8f12c83367597a03d96c16edee9f972039f", size = 4082, upload-time = "2024-10-17T05:17:40.772Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/aa/2a2e98107309d85f9c46552bbbaa97f56a40c4914e379122e2630b8edce0/easyrepl-0.2.0.tar.gz", hash = "sha256:4c9b8954b1bf8ced7837ada46f8e158f93903016cde513958a4c9b64d6115d52", size = 4243, upload-time = "2026-02-26T18:05:53.159Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/f1/7ba1f4d69a00127862f0c1df6b36537ca36ead2a34b1db9ed2e1b5a9c954/easyrepl-0.1.5-py3-none-any.whl", hash = "sha256:1d27e47cc9bd408d7e1832ffc19a827d429ed31f39047553e364a0fdcce26c6a", size = 4684, upload-time = "2024-10-17T05:17:39.317Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/b0/3dbe05e09aae8572eb1ce46eedce2be0209419cee81c8564d61bb151c68e/easyrepl-0.2.0-py3-none-any.whl", hash = "sha256:95dd17b39ea8091c69b90cac27e10825ecec778f703b208ad00e6c98db672c3b", size = 4843, upload-time = "2026-02-26T18:05:51.95Z" },
 ]
 
 [[package]]
@@ -1135,7 +1135,7 @@ requires-dist = [
 provides-extras = ["openrouter", "local", "openai", "google", "anthropic", "ollama", "all"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "easyrepl", specifier = ">=0.1.5" }]
+dev = [{ name = "easyrepl", specifier = ">=0.2.0" }]
 
 [[package]]
 name = "torch"
