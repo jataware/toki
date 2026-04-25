@@ -8,13 +8,17 @@ than the `local` runtime extra.
 
 import importlib.util
 import json
-from collections.abc import Iterable
 from os import PathLike
 from pathlib import Path
+from typing import Literal
 
 from huggingface_hub import HfApi, hf_hub_download, list_repo_files
-from huggingface_hub.utils import HfHubHTTPError
+from huggingface_hub.utils import HfHubHTTPError, disable_progress_bars
 from tqdm import tqdm
+
+# silence the per-file progress bars that hf_hub_download prints for tiny
+# config / chat_template files - they completely clobber our outer tqdm.
+disable_progress_bars()
 
 
 here = Path(__file__).parent
@@ -27,53 +31,68 @@ DEFAULT_PIPELINE_TAGS = ("text-generation", "image-text-to-text")
 # common keys for the model's max sequence length, in priority order
 _CONTEXT_SIZE_KEYS = ("max_position_embeddings", "n_positions", "seq_length", "max_seq_len")
 
+# HF sort modes:
+#   - "downloads" is HF's ~30-day download count (NOT all-time; HF doesn't expose
+#     an all-time sort), so this is already a recent-popularity signal.
+#   - "trending_score" is a much shorter-window buzz signal that mixes downloads,
+#     likes, and discussion velocity. Use this to surface brand-new hot models.
+SortBy = Literal["downloads", "trending_score"]
+
 
 def list_local_chat_models(
     *,
     top_k: int = 100,
     min_downloads: int = 1000,
     pipeline_tags: tuple[str, ...] = DEFAULT_PIPELINE_TAGS,
-    skip_ids: Iterable[str] = (),
+    sort_by: SortBy = "downloads",
+    known_attrs: dict[str, dict] | None = None,
 ) -> list[dict]:
     """
-    Search HuggingFace Hub for popular instruction-tuned chat models, verified
-    by the presence of a tokenizer `chat_template`.
+    Return the current top `top_k` instruction-tuned chat models on HuggingFace
+    Hub, sorted by `sort_by` and verified to ship a tokenizer `chat_template`.
 
-    Sweeps the top-most-downloaded models for each `pipeline_tag`, then keeps
-    only repos that ship a chat template. For each kept repo, also fetches
-    `context_size` (from `config.json`) and infers `supports_tools` from the
-    template body.
+    For each kept repo also reports `context_size` (from `config.json`) and
+    `supports_tools` (inferred from the template body referencing `tools`).
 
-    `skip_ids` is consulted before any HTTP work, so passing a set of
-    already-known repo ids makes incremental refreshes cheap.
+    `known_attrs` is an optional `{id: {context_size, supports_tools}}` map of
+    already-verified repos. Ids appearing here are counted toward `top_k`
+    using the supplied attrs, with no HTTP work - making refreshes cheap when
+    most of the popular list is unchanged.
 
     Returns a list of dicts: {id, context_size, supports_tools}.
     """
-    skip = set(skip_ids)
+    known_attrs = known_attrs or {}
     api = HfApi()
     seen: set[str] = set()
     candidates = []
-    overshoot = top_k * 4  # most popular models include base/non-chat ones, so over-fetch
+    overshoot = top_k * 4  # popular list contains many base/non-chat repos, so over-fetch
     for tag in pipeline_tags:
         for m in api.list_models(
             pipeline_tag=tag,
-            sort="downloads",
+            sort=sort_by,
             limit=overshoot,
         ):
-            if m.id in seen or m.id in skip:
+            if m.id in seen:
                 continue
             seen.add(m.id)
             if (m.downloads or 0) < min_downloads:
                 continue
-            candidates.append(m)
+            score = m.downloads if sort_by == "downloads" else (getattr(m, "trending_score", 0) or 0)
+            candidates.append((score, m))
 
-    candidates.sort(key=lambda m: -(m.downloads or 0))
+    candidates.sort(key=lambda x: -x[0])
 
     verified: list[dict] = []
-    for m in tqdm(candidates, desc="Fetching attrs"):
-        attrs = _fetch_model_attrs(m.id)
-        if attrs is not None:
-            verified.append({"id": m.id, **attrs})
+    with tqdm(total=top_k, desc="Verifying") as pbar:
+        for _, m in candidates:
+            if m.id in known_attrs:
+                verified.append({"id": m.id, **known_attrs[m.id]})
+            else:
+                attrs = _fetch_model_attrs(m.id)
+                if attrs is None:
+                    continue
+                verified.append({"id": m.id, **attrs})
+            pbar.update(1)
             if len(verified) >= top_k:
                 break
 
@@ -169,37 +188,43 @@ def _create_models_types_file(
     *,
     top_k: int = 100,
     min_downloads: int = 1000,
+    sort_by: SortBy = "trending_score",
     file: PathLike = here / "models.py",
 ):
     """
     Dev helper: regenerate `toki/local/models.py` with a `ModelName` Literal
     of popular instruction-tuned chat models for IDE autocomplete.
 
-    Existing entries are preserved (HF repos rarely disappear); a fresh sweep
-    of HF Hub finds any new popular chat models to add to the snapshot.
+    Pulls the *current* top `top_k` chat models from HF (under `sort_by`) and
+    merges any not-yet-known ones into the existing snapshot. Existing entries
+    are never removed (HF repos rarely disappear, and the snapshot is a growing
+    curated set), so on a typical refresh the file may grow by 0..top_k models.
     """
     file = Path(file)
     existing = _load_existing_attrs(file)
     if existing:
         print(f"Loaded {len(existing)} existing entries from {file.relative_to(here.parent)}")
 
-    new_models = list_local_chat_models(
+    top = list_local_chat_models(
         top_k=top_k,
         min_downloads=min_downloads,
-        skip_ids=existing.keys(),
+        sort_by=sort_by,
+        known_attrs=existing,
     )
-    print(f"Found {len(new_models)} new chat models")
+    new_ids = [m["id"] for m in top if m["id"] not in existing]
+    print(f"Top {len(top)} by {sort_by!r}: {len(new_ids)} new, {len(top) - len(new_ids)} already known")
 
     merged: dict[str, dict] = dict(existing)
-    for m in new_models:
-        merged[m["id"]] = {"context_size": m["context_size"], "supports_tools": m["supports_tools"]}
+    for m in top:
+        if m["id"] not in merged:
+            merged[m["id"]] = {"context_size": m["context_size"], "supports_tools": m["supports_tools"]}
 
     if not merged:
         raise RuntimeError("No models in result - check filters / network")
 
     sorted_ids = sorted(merged.keys(), key=str.lower)
 
-    print(f"Writing {file.relative_to(here.parent)} with {len(sorted_ids)} models")
+    print(f"Writing {file.relative_to(here.parent)} with {len(sorted_ids)} models ({len(new_ids)} added this run)")
     name_lines = ',\n    '.join(f"'{i}'" for i in sorted_ids)
     attributes_lines = ',\n    '.join(
         f'''{f'"{i}":':<60}Attr(context_size={merged[i]["context_size"]}, supports_tools={merged[i]["supports_tools"]})'''
