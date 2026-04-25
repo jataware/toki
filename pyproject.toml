@@ -33,8 +33,13 @@ packages = ["toki"]
 [dependency-groups]
 dev = [
     "easyrepl>=0.2.0",
+    # used by the toki-fetch-local-models codegen script
+    "huggingface-hub>=0.20",
+    "tqdm>=4",
 ]
 
 [project.scripts]
 # Developer utility to regenerate the OpenRouter models file
-"toki-fetch-models" = "toki.openrouter.utils:_create_models_types_file"
+"toki-fetch-openrouter-models" = "toki.openrouter.fetch_models:_create_models_types_file"
+# Developer utility to regenerate the HuggingFace local-chat-models file
+"toki-fetch-local-models" = "toki.local.fetch_models:_create_models_types_file"

@@ -1122,6 +1122,8 @@ openrouter = [
 [package.dev-dependencies]
 dev = [
     { name = "easyrepl" },
+    { name = "huggingface-hub" },
+    { name = "tqdm" },
 ]
 
 [package.metadata]
@@ -1135,7 +1137,11 @@ requires-dist = [
 provides-extras = ["openrouter", "local", "openai", "google", "anthropic", "ollama", "all"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "easyrepl", specifier = ">=0.2.0" }]
+dev = [
+    { name = "easyrepl", specifier = ">=0.2.0" },
+    { name = "huggingface-hub", specifier = ">=0.20" },
+    { name = "tqdm", specifier = ">=4" },
+]
 
 [[package]]
 name = "torch"
