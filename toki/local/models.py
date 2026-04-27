@@ -13,7 +13,7 @@ from typing import Literal
 from dataclasses import dataclass
 
 
-ModelName = Literal[
+LocalModelName = Literal[
     '0xSero/GLM-5.1-555B-A14B-REAP-GPTQ-W4A16',
     'AIDC-AI/Marco-Nano-Instruct',
     'Alibaba-NLP/Tongyi-DeepResearch-30B-A3B',
@@ -277,7 +277,7 @@ class Attr:
     # TBD: may add more in the future
 
 
-attributes_map: dict[ModelName, Attr] = {
+attributes_map: dict[LocalModelName, Attr] = {
     "0xSero/GLM-5.1-555B-A14B-REAP-GPTQ-W4A16":                 Attr(context_size=202752, supports_tools=True),
     "AIDC-AI/Marco-Nano-Instruct":                              Attr(context_size=32768, supports_tools=True),
     "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B":                  Attr(context_size=131072, supports_tools=True),

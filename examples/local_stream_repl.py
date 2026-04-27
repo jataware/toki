@@ -1,10 +1,9 @@
 from easyrepl import REPL
 
-from toki import Agent
-from toki.local import Model
+from toki import Agent, LocalModel
 
 
-model = Model("google/gemma-4-E2B-it")
+model = LocalModel("Qwen/Qwen3-0.6B")
 agent = Agent(model)
 
 for query in REPL(history=".chat"):

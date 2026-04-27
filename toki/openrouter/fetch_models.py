@@ -30,7 +30,7 @@ def _get_openrouter_models(api_key: str) -> list[dict]:
 
 def _create_models_types_file(api_key: str | None = None, file: PathLike = here / 'models.py'):
     """
-    Dev helper tool: create a file with a type declaration `ModelName` containing all OpenRouter models.
+    Dev helper tool: create a file with a type declaration `OpenRouterModelName` containing all OpenRouter models.
     """
     if api_key is None:
         api_key = get_openrouter_api_key()
@@ -53,7 +53,7 @@ from typing import Literal
 from dataclasses import dataclass
 
 
-ModelName = Literal[
+OpenRouterModelName = Literal[
     {name_lines}
 ]
 
@@ -65,7 +65,7 @@ class Attr:
     # TBD: may add more in the future
 
 
-attributes_map: dict[ModelName, Attr] = {{
+attributes_map: dict[OpenRouterModelName, Attr] = {{
     {attributes_lines}
 }}
 ''')

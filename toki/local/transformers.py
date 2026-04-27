@@ -9,7 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 from ..model import BaseModel, TokiMessage, TokiToolCall, TokiToolResponse, TokiUsageMetadata
 
 
-class Model(BaseModel):
+class LocalModel(BaseModel):
     """Local `transformers`-backed model with the same interface as other toki backends."""
 
     def __init__(self, model: str, allow_parallel_tool_calls: bool = False):

@@ -1,11 +1,12 @@
 import json
+import warnings
 from typing import Any, Generator, Literal, TypedDict, cast, overload
 
 import requests
 from typing_extensions import NotRequired
 
 from ..model import BaseModel, TokiMessage, TokiToolCall, TokiToolResponse, TokiUsageMetadata
-from .models import ModelName
+from .models import OpenRouterModelName
 
 
 class OpenRouterResponseCompletionChoice(TypedDict):
@@ -35,13 +36,15 @@ class OpenRouterResponseError(TypedDict):
     error: Any
 
 
-class Model(BaseModel):
+class OpenRouterModel(BaseModel):
     """Toki model backend that talks to OpenRouter's chat-completions API over HTTPS."""
 
-    def __init__(self, model: ModelName, openrouter_api_key: str, allow_parallel_tool_calls: bool = False):
+    def __init__(self, model: OpenRouterModelName, api_key: str, allow_parallel_tool_calls: bool = False, cache: bool = False):
         super().__init__()
+        if cache:
+            warnings.warn("cache=True is not yet implemented; ignoring", stacklevel=2)
         self.model = model
-        self.openrouter_api_key = openrouter_api_key
+        self.api_key = api_key
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
 
     @overload
@@ -53,7 +56,7 @@ class Model(BaseModel):
         payload = {"model": self.model, "messages": messages, **tool_payload, **kwargs}
         response = requests.post(
             url="https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {self.openrouter_api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             json=payload
         )
         data = cast(OpenRouterResponse | OpenRouterResponseError, response.json())
@@ -77,7 +80,7 @@ class Model(BaseModel):
     def _streaming_complete(self, messages: list[TokiMessage], tools: list | None = None, **kwargs) -> Generator[str | TokiToolResponse, None, None]:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {self.openrouter_api_key}",
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
@@ -133,6 +136,6 @@ class Model(BaseModel):
                 # ignore other fields like "event:" / "id:" / comments / etc.
 
 
-# TODO: make wrapper class around Model that interfaces with tools, but as strings rather than via the openrouter API
+# TODO: make wrapper class around OpenRouterModel that interfaces with tools, but as strings rather than via the openrouter API
 #       basically for cases where the model either doesn't support tools, or it does but the interface is flaky
-#       it should be usable as a drop-in replacement for Model (e.g. in Agent/etc.)
+#       it should be usable as a drop-in replacement for OpenRouterModel (e.g. in Agent/etc.)

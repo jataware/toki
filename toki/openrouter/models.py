@@ -6,7 +6,7 @@ from typing import Literal
 from dataclasses import dataclass
 
 
-ModelName = Literal[
+OpenRouterModelName = Literal[
     'ai21/jamba-large-1.7',
     'aion-labs/aion-1.0',
     'aion-labs/aion-1.0-mini',
@@ -372,7 +372,7 @@ class Attr:
     # TBD: may add more in the future
 
 
-attributes_map: dict[ModelName, Attr] = {
+attributes_map: dict[OpenRouterModelName, Attr] = {
     "ai21/jamba-large-1.7":                 Attr(context_size=256000, supports_tools=True),
     "aion-labs/aion-1.0":                   Attr(context_size=131072, supports_tools=False),
     "aion-labs/aion-1.0-mini":              Attr(context_size=131072, supports_tools=False),

@@ -192,7 +192,7 @@ def _create_models_types_file(
     file: PathLike = here / "models.py",
 ):
     """
-    Dev helper: regenerate `toki/local/models.py` with a `ModelName` Literal
+    Dev helper: regenerate `toki/local/models.py` with a `LocalModelName` Literal
     of popular instruction-tuned chat models for IDE autocomplete.
 
     Pulls the *current* top `top_k` chat models from HF (under `sort_by`) and
@@ -246,7 +246,7 @@ from typing import Literal
 from dataclasses import dataclass
 
 
-ModelName = Literal[
+LocalModelName = Literal[
     {name_lines}
 ]
 
@@ -258,7 +258,7 @@ class Attr:
     # TBD: may add more in the future
 
 
-attributes_map: dict[ModelName, Attr] = {{
+attributes_map: dict[LocalModelName, Attr] = {{
     {attributes_lines}
 }}
 ''')

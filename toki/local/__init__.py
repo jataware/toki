@@ -1,5 +1,5 @@
-from .transformers import Model
-from .models import ModelName, attributes_map
+from .transformers import LocalModel
+from .models import LocalModelName, attributes_map
 from .utils import list_huggingface_models
 
-__all__ = ['Model', 'ModelName', 'attributes_map', 'list_huggingface_models']
+__all__ = ['LocalModel', 'LocalModelName', 'attributes_map', 'list_huggingface_models']

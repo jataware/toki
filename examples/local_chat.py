@@ -13,8 +13,7 @@ from datetime import UTC, datetime
 
 from easyrepl import REPL
 
-from toki import Agent, pretty_tool_call
-from toki.local import Model
+from toki import Agent, LocalModel, pretty_tool_call
 from toki.model import TokiToolCall, TokiToolResponse
 
 
@@ -133,7 +132,7 @@ def main() -> None:
         message="Warning: You are sending unauthenticated requests to the HF Hub.*",
     )
 
-    model = Model("Qwen/Qwen3-0.6B")
+    model = LocalModel("Qwen/Qwen3-0.6B")
     agent = Agent(model, tools=TOOL_SCHEMAS)
     agent.add_system_message("You are a concise, helpful assistant. Use tools when they are useful.")
 
