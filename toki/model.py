@@ -1,48 +1,91 @@
 import json
 from abc import ABC, abstractmethod
-from typing import Generator, Literal, TypedDict, overload
-
-from typing_extensions import NotRequired
+from dataclasses import dataclass
+from typing import Generator, Literal, overload
 
 
 Role = Literal["user", "assistant", "system", "tool"]
 
 
-class TokiToolFunction(TypedDict):
+@dataclass
+class TokiToolFunction:
     name: str
-    arguments: str  # needs to be converted to dict via json.loads
+    arguments: str  # JSON-encoded; convert via json.loads
+
+    @classmethod
+    def from_dict(cls, x: 'TokiToolFunction | dict') -> 'TokiToolFunction':
+        return x if isinstance(x, cls) else cls(**x)
 
 
-class TokiToolCall(TypedDict):
+@dataclass
+class TokiToolCall:
     id: str
-    type: Literal["function"]  # TODO: other types?
     function: TokiToolFunction
+    type: Literal["function"] = "function"
+
+    @classmethod
+    def from_dict(cls, x: 'TokiToolCall | dict') -> 'TokiToolCall':
+        if isinstance(x, cls):
+            return x
+        return cls(
+            id=x["id"],
+            type=x.get("type", "function"),
+            function=TokiToolFunction.from_dict(x["function"]),
+        )
 
 
-class TokiMessage(TypedDict):
+@dataclass
+class TokiMessage:
     role: Role
     content: str
-    tool_calls: NotRequired[list[TokiToolCall]]
-    tool_call_id: NotRequired[str]
+    tool_calls: list[TokiToolCall] | None = None
+    tool_call_id: str | None = None
+
+    @classmethod
+    def from_dict(cls, x: 'TokiMessage | dict') -> 'TokiMessage':
+        if isinstance(x, cls):
+            return x
+        tcs = x.get("tool_calls")
+        return cls(
+            role=x["role"],
+            content=x["content"],
+            tool_calls=[TokiToolCall.from_dict(t) for t in tcs] if tcs else None,
+            tool_call_id=x.get("tool_call_id"),
+        )
 
 
-class TokiToolResponse(TypedDict):
-    thought: str
-    tool_calls: list[TokiToolCall]
-
-
-# TODO: more usage metadata can be added as backends report it
-class TokiUsageMetadata(TypedDict):
+@dataclass
+class TokiUsageMetadata:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
 
 
+@dataclass
+class TokiChatResponse:
+    """Blocking-mode chat response when `capture_thinking=True`."""
+    content: str
+    thought: str  # empty string if model produced no thinking
+
+
+@dataclass
+class TokiToolResponse:
+    """Returned (blocking) or yielded (streaming) when the model emits tool calls."""
+    thought: str
+    tool_calls: list[TokiToolCall]
+
+
+@dataclass
+class TokiThinking:
+    """Streaming chunk carrying a piece of the model's reasoning text. Only seen when `capture_thinking=True`."""
+    text: str
+
+
 def pretty_tool_call(tool_call: TokiToolCall) -> str:
     """Return a string representation of the tool call, i.e. `tool_name(arg1=value1, arg2=value2, ...)`"""
-    args = json.loads(tool_call["function"]["arguments"])
+    args = json.loads(tool_call.function.arguments)
     args_str = ", ".join(f"{k}={v}" for k, v in args.items())
-    return f'{tool_call["function"]["name"]}({args_str})'
+    return f'{tool_call.function.name}({args_str})'
 
 
 class BaseModel(ABC):
@@ -52,29 +95,56 @@ class BaseModel(ABC):
         # updated after every completion
         self._usage_metadata: TokiUsageMetadata | None = None
 
+    # blocking
     @overload
-    def complete(self, messages: list[TokiMessage], *, stream: Literal[False] = False, tools: None = None, **kwargs) -> str: ...
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: None = None, capture_thinking: Literal[False] = False, **kwargs) -> str: ...
     @overload
-    def complete(self, messages: list[TokiMessage], *, stream: Literal[False] = False, tools: list, **kwargs) -> str | TokiToolResponse: ...
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: list, capture_thinking: Literal[False] = False, **kwargs) -> str | TokiToolResponse: ...
     @overload
-    def complete(self, messages: list[TokiMessage], *, stream: Literal[True], tools: None = None, **kwargs) -> Generator[str, None, None]: ...
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: None = None, capture_thinking: Literal[True], **kwargs) -> TokiChatResponse: ...
     @overload
-    def complete(self, messages: list[TokiMessage], *, stream: Literal[True], tools: list, **kwargs) -> Generator[str | TokiToolResponse, None, None]: ...
-    def complete(self, messages: list[TokiMessage], *, stream: bool = False, tools: list | None = None, **kwargs) -> str | TokiToolResponse | Generator[str | TokiToolResponse, None, None]:
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: list, capture_thinking: Literal[True], **kwargs) -> TokiChatResponse | TokiToolResponse: ...
+    # streaming
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: None = None, capture_thinking: Literal[False] = False, **kwargs) -> Generator[str, None, None]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: list, capture_thinking: Literal[False] = False, **kwargs) -> Generator[str | TokiToolResponse, None, None]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: None = None, capture_thinking: Literal[True], **kwargs) -> Generator[str | TokiThinking, None, None]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: list, capture_thinking: Literal[True], **kwargs) -> Generator[str | TokiThinking | TokiToolResponse, None, None]: ...
+    def complete(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        stream: bool = False,
+        tools: list | None = None,
+        capture_thinking: bool = False,
+        **kwargs,
+    ) -> str | TokiChatResponse | TokiToolResponse | Generator[str | TokiThinking | TokiToolResponse, None, None]:
+        normalized = [TokiMessage.from_dict(m) for m in messages]
         if stream:
-            return self._streaming_complete(messages, tools, **kwargs)
-        return self._blocking_complete(messages, tools, **kwargs)
+            return self._streaming_complete(normalized, tools, capture_thinking=capture_thinking, **kwargs)
+        return self._blocking_complete(normalized, tools, capture_thinking=capture_thinking, **kwargs)
 
     @overload
-    def _blocking_complete(self, messages: list[TokiMessage], tools: None = None, **kwargs) -> str: ...
+    def _blocking_complete(self, messages: list[TokiMessage], tools: None = None, *, capture_thinking: Literal[False] = False, **kwargs) -> str: ...
     @overload
-    def _blocking_complete(self, messages: list[TokiMessage], tools: list, **kwargs) -> str | TokiToolResponse: ...
+    def _blocking_complete(self, messages: list[TokiMessage], tools: list, *, capture_thinking: Literal[False] = False, **kwargs) -> str | TokiToolResponse: ...
+    @overload
+    def _blocking_complete(self, messages: list[TokiMessage], tools: None = None, *, capture_thinking: Literal[True], **kwargs) -> TokiChatResponse: ...
+    @overload
+    def _blocking_complete(self, messages: list[TokiMessage], tools: list, *, capture_thinking: Literal[True], **kwargs) -> TokiChatResponse | TokiToolResponse: ...
     @abstractmethod
-    def _blocking_complete(self, messages: list[TokiMessage], tools: list | None = None, **kwargs) -> str | TokiToolResponse: ...
+    def _blocking_complete(self, messages: list[TokiMessage], tools: list | None = None, *, capture_thinking: bool = False, **kwargs) -> str | TokiChatResponse | TokiToolResponse: ...
 
     @overload
-    def _streaming_complete(self, messages: list[TokiMessage], tools: None = None, **kwargs) -> Generator[str, None, None]: ...
+    def _streaming_complete(self, messages: list[TokiMessage], tools: None = None, *, capture_thinking: Literal[False] = False, **kwargs) -> Generator[str, None, None]: ...
     @overload
-    def _streaming_complete(self, messages: list[TokiMessage], tools: list, **kwargs) -> Generator[str | TokiToolResponse, None, None]: ...
+    def _streaming_complete(self, messages: list[TokiMessage], tools: list, *, capture_thinking: Literal[False] = False, **kwargs) -> Generator[str | TokiToolResponse, None, None]: ...
+    @overload
+    def _streaming_complete(self, messages: list[TokiMessage], tools: None = None, *, capture_thinking: Literal[True], **kwargs) -> Generator[str | TokiThinking, None, None]: ...
+    @overload
+    def _streaming_complete(self, messages: list[TokiMessage], tools: list, *, capture_thinking: Literal[True], **kwargs) -> Generator[str | TokiThinking | TokiToolResponse, None, None]: ...
     @abstractmethod
-    def _streaming_complete(self, messages: list[TokiMessage], tools: list | None = None, **kwargs) -> Generator[str | TokiToolResponse, None, None]: ...
+    def _streaming_complete(self, messages: list[TokiMessage], tools: list | None = None, *, capture_thinking: bool = False, **kwargs) -> Generator[str | TokiThinking | TokiToolResponse, None, None]: ...

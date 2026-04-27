@@ -109,27 +109,64 @@ model = OpenRouterModel('openai/gpt-5', api_key=get_openrouter_api_key(), allow_
 agent = Agent(model, tools=tools)
 
 agent.add_user_message("What's the weather in Paris?")
-result = agent.execute()  # str or {thought:str, tool_calls:list}
+result = agent.execute()  # str or TokiToolResponse(thought, tool_calls)
 
-if isinstance(result, dict):
+if isinstance(result, str):
+    print(result)
+else:
     # Execute tool calls and send results back
-    for call in result["tool_calls"]:
-        args = json.loads(call["function"]["arguments"])  # dict
-        if call["function"]["name"] == "get_weather":
+    for call in result.tool_calls:
+        args = json.loads(call.function.arguments)  # dict
+        if call.function.name == "get_weather":
             tool_output = get_weather(args["city"])  # run your function
-            agent.add_tool_message(call["id"], tool_output)
+            agent.add_tool_message(call.id, tool_output)
 
     # Ask model to continue after tool outputs
     final = agent.execute()
     print(final)
-else:
-    print(result)
 ```
 
 Notes:
 - In streaming mode, `Agent.execute(stream=True)` yields `str` chunks and may also yield tool-call payloads. The streaming API is designed to be straightforward; use it for responsive UIs/logging. The blocking pattern above is still the simplest entry point when first wiring up tools.
 - `allow_parallel_tool_calls=True` lets the model request multiple tools at once when supported.
 - WIP: We plan to add utilities to auto-generate tool schemas from Python callables for faster integrations.
+
+## Capturing thinking
+Reasoning models (OpenAI o-series, Anthropic Claude with thinking, DeepSeek-R1, QwQ, Qwen3 thinking variants, etc.) produce internal "thinking" before their final answer. By default toki strips this — your stream stays a clean stream of answer text. Pass `capture_thinking=True` to surface it as `TokiThinking` chunks (streaming) or as a `thought` field on the response object (blocking).
+
+Streaming:
+```python
+from toki import Agent, OpenRouterModel, TokiThinking, TokiToolResponse, get_openrouter_api_key
+
+model = OpenRouterModel('openai/o4-mini', api_key=get_openrouter_api_key())
+agent = Agent(model)
+
+agent.add_user_message("If a train travels 60 mph for 2.5 hours, how far does it go?")
+for chunk in agent.execute(stream=True, capture_thinking=True):
+    if isinstance(chunk, TokiThinking):
+        print(f"\033[2m{chunk.text}\033[0m", end='', flush=True)  # dim
+    elif isinstance(chunk, str):
+        print(chunk, end='', flush=True)
+print()
+```
+
+Blocking:
+```python
+from toki import Agent, OpenRouterModel, TokiChatResponse, get_openrouter_api_key
+
+model = OpenRouterModel('openai/o4-mini', api_key=get_openrouter_api_key())
+agent = Agent(model)
+
+agent.add_user_message("Solve: 9.9 vs 9.11, which is larger?")
+result = agent.execute(capture_thinking=True)  # TokiChatResponse
+assert isinstance(result, TokiChatResponse)
+print("thought:", result.thought)
+print("answer:", result.content)
+```
+
+Notes:
+- Thinking text is *not* added back to message history; round-tripping reasoning context across turns is not yet supported.
+- For OpenRouter, toki sets `reasoning: {enabled: true}` in the request when `capture_thinking=True`. For the local backend, toki parses `<think>...</think>` tags inline.
 
 ## Agentic flows with Implicit State Machines
 Toki includes lightweight state machines to structure multi-step interactions. State machines are implicit as state transitions are controlled solely by the return value(s) of each state handler function, as opposed to a more global description of the graph.

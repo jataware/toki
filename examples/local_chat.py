@@ -13,8 +13,7 @@ from datetime import UTC, datetime
 
 from easyrepl import REPL
 
-from toki import Agent, LocalModel, pretty_tool_call
-from toki.model import TokiToolCall, TokiToolResponse
+from toki import Agent, LocalModel, TokiToolCall, TokiToolResponse, pretty_tool_call
 
 
 LOG_LEVEL = logging.INFO
@@ -68,9 +67,9 @@ TOOLS_BY_NAME: dict[str, Callable[..., object]] = {
 
 
 def execute_tool_call(tool_call: TokiToolCall) -> str:
-    function_name = tool_call["function"]["name"]
+    function_name = tool_call.function.name
     function = TOOLS_BY_NAME[function_name]
-    arguments = json.loads(tool_call["function"]["arguments"])
+    arguments = json.loads(tool_call.function.arguments)
     result = function(**arguments)
     result_json = json.dumps(result)
     logger.info("Tool result for %s: %s", pretty_tool_call(tool_call), result_json)
@@ -90,11 +89,11 @@ def run_agent_turn(agent: Agent) -> str:
             return "".join(result_chunks)
 
         for chunk in agent.model.complete(agent.messages, stream=True, tools=agent.tools):
-            if isinstance(chunk, str):
+            if isinstance(chunk, TokiToolResponse):
+                tool_response = chunk
+            elif isinstance(chunk, str):
                 print(chunk, end="", flush=True)
                 result_chunks.append(chunk)
-            else:
-                tool_response = chunk
 
         if result_chunks:
             print()
@@ -104,12 +103,12 @@ def run_agent_turn(agent: Agent) -> str:
             agent.add_assistant_message(assistant_text)
             return assistant_text
 
-        agent.add_assistant_tool_calls(tool_response["thought"], tool_response["tool_calls"])
+        agent.add_assistant_tool_calls(tool_response.thought, tool_response.tool_calls)
 
-        for tool_call in tool_response["tool_calls"]:
+        for tool_call in tool_response.tool_calls:
             logger.info("Tool call: %s", pretty_tool_call(tool_call))
             tool_result = execute_tool_call(tool_call)
-            agent.add_tool_message(tool_call["id"], tool_result)
+            agent.add_tool_message(tool_call.id, tool_result)
 
 
 def main() -> None:
