@@ -330,17 +330,28 @@ Each backend lives under its own submodule and exposes a `<Provider>Model` class
 - `toki.GoogleModel` — Google Gemini AI Studio, dispatched through litellm (install `toki[google]`)
 - `toki.ollama` — not yet implemented
 
-The litellm-backed frontends share a common implementation under `toki.litellm` (not user-facing). All take the same `(model, *, api_key, allow_parallel_tool_calls=False, cache=False)` constructor:
+The litellm-backed frontends share a common implementation under `toki.litellm` (not user-facing). All three accept the same core constructor `(model, *, api_key, reasoning_effort=None, allow_parallel_tool_calls=False, cache=False)`:
 
 ```python
 from toki import OpenAIModel, AnthropicModel, GoogleModel, get_openai_api_key, get_anthropic_api_key, get_google_api_key, Agent
 
-openai = OpenAIModel('gpt-4o', api_key=get_openai_api_key())
-claude = AnthropicModel('claude-3-5-sonnet-20240620', api_key=get_anthropic_api_key())
-gemini = GoogleModel('gemini-1.5-pro', api_key=get_google_api_key())
+openai = OpenAIModel('gpt-5.4-nano', api_key=get_openai_api_key())
+claude = AnthropicModel('claude-haiku-4-5', api_key=get_anthropic_api_key())
+gemini = GoogleModel('gemini-2.5-flash', api_key=get_google_api_key())
 
 agent = Agent(openai)
 ```
+
+### Reasoning effort
+`reasoning_effort` is a server-side compute knob accepted by every litellm-backed frontend. Pass `'minimal' | 'low' | 'medium' | 'high' | 'xhigh'`; provider-supported subsets vary, and Python `None` (the default) disables reasoning entirely. It's independent of `capture_thinking` — `reasoning_effort` controls how much the *server* thinks, while `capture_thinking` controls whether thoughts are surfaced to the *caller*. You can mix and match.
+
+```python
+OpenAIModel('gpt-5.4', api_key=..., reasoning_effort='high')
+AnthropicModel('claude-sonnet-4-5', api_key=..., reasoning_effort='medium')
+GoogleModel('gemini-2.5-pro', api_key=..., reasoning_effort='low')
+```
+
+Caveat: `OpenAIModel` does *not* reliably surface thoughts when `capture_thinking=True`. OpenAI's Chat Completions endpoint doesn't return reasoning text at all, and the Responses API summaries are emitted only sporadically (especially when the response is a tool call). Server-side reasoning still happens — answers improve at higher `reasoning_effort` — you just won't see the chain. The Anthropic and Google backends do reliably stream thoughts back when `capture_thinking=True`.
 
 `Agent` is backend-agnostic and accepts any `BaseModel`. If you're writing a new backend, subclass `toki.BaseModel` and implement just two methods — `_raw_blocking` (returns a `_RawTurn`) and `_raw_streaming` (yields `_RawContentChunk` / `_RawThoughtChunk` / `_RawToolCallChunk` / `_RawUsage`). All public-facing types, schema unwrapping, and streaming JSON parsing happen in the base class.
 

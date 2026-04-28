@@ -11,7 +11,15 @@ import importlib
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+
+from toki import (
+    StreamingToolSchema,
+    TokiArgStream,
+    TokiThinking,
+    TokiToolCall,
+    TokiToolCallStream,
+    ToolSchema,
+)
 
 import pytest
 
@@ -29,26 +37,25 @@ def pytest_configure(config: pytest.Config) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.option.htmlpath = str(results_dir / f"{stamp}.html")
 
-from toki import (
-    StreamingToolSchema,
-    TokiArgStream,
-    TokiThinking,
-    TokiToolCall,
-    TokiToolCallStream,
-    ToolSchema,
-)
 
 
 # Pick smallest/cheapest models that satisfy each test profile. Verified against
-# each provider's generated `models.py` snapshot. `Qwen/Qwen3-0.6B` natively
-# supports tool calls and reasoning via its chat template, so it serves as both
-# default and reasoning entry for the local backend.
+# each provider's generated `models.py` snapshot. Qwen3 natively supports tool
+# calls and reasoning via its chat template, so the same Qwen entry serves as
+# both default and reasoning for the local backend.
+#
+# OpenAI's `reasoning` is intentionally `None`: even via the Responses API
+# bridge with `reasoning_summary='detailed'`, gpt-5.4-nano/mini emit
+# `reasoning_content` only sporadically (especially when a tool call is the
+# response). Server-side reasoning still works (`OpenAIModel(...,
+# reasoning_effort=...)` is exposed), but we can't reliably assert on captured
+# thoughts so the corresponding `capture_thinking=True` tests are skipped.
 MODELS: dict[str, dict[str, str | None]] = {
-    "openrouter": {"default": "openai/gpt-5-mini",      "reasoning": "openai/gpt-5-mini"},
-    "openai":     {"default": "gpt-5-mini",             "reasoning": "gpt-5-mini"},
-    "anthropic":  {"default": "claude-haiku-4-5",        "reasoning": "claude-sonnet-4-5"},
-    "google":     {"default": "gemini-2.5-flash",        "reasoning": "gemini-2.5-flash"},
-    "local":      {"default": "Qwen/Qwen3-1.7B",         "reasoning": "Qwen/Qwen3-1.7B"},
+    "openrouter": {"default": "anthropic/claude-haiku-4-5",   "reasoning": "anthropic/claude-sonnet-4-5"},
+    "openai":     {"default": "gpt-5.4-nano",                 "reasoning": None},
+    "anthropic":  {"default": "claude-haiku-4-5",             "reasoning": "claude-sonnet-4-5"},
+    "google":     {"default": "gemini-2.5-flash",             "reasoning": "gemini-2.5-flash"},
+    "local":      {"default": "Qwen/Qwen3-1.7B",              "reasoning": "Qwen/Qwen3-1.7B"},
 }
 
 
@@ -66,13 +73,21 @@ _HOSTED_PROVIDER_CONFIG: dict[str, tuple[str, str]] = {
 }
 
 
+# litellm-backed backends accept a `reasoning_effort` init param. The
+# OpenRouter and local backends drive reasoning through `capture_thinking` alone,
+# so we don't forward it to them.
+_REASONING_EFFORT_PROVIDERS: set[str] = {"openai", "anthropic", "google"}
+
+
 def make_model(provider: str, *, reasoning: bool):
     """Construct the configured backend for `provider`.
 
     Hard-fails (not skips) when the required env var is missing — per the
     project's testing philosophy, a missing key is a configuration error not a
     silent gap. Skips cleanly when no model is configured for the requested
-    profile (e.g. a provider with no reasoning model).
+    profile (e.g. a provider with no reasoning model). When `reasoning=True`
+    and the provider's frontend accepts a `reasoning_effort` init param, the
+    model is constructed with `reasoning_effort='medium'`.
     """
     name = MODELS[provider]["reasoning" if reasoning else "default"]
     if name is None:
@@ -90,9 +105,12 @@ def make_model(provider: str, *, reasoning: bool):
     Cls = getattr(importlib.import_module("toki"), ctor_name)
 
     if provider == "openrouter":
-        # OpenRouter takes api_key positionally
         return Cls(name, os.environ[env_var], allow_parallel_tool_calls=True)
-    return Cls(name, api_key=os.environ[env_var], allow_parallel_tool_calls=True)
+
+    kwargs: dict = {"api_key": os.environ[env_var], "allow_parallel_tool_calls": True}
+    if reasoning and provider in _REASONING_EFFORT_PROVIDERS:
+        kwargs["reasoning_effort"] = "medium"
+    return Cls(name, **kwargs)
 
 
 # ----- tool schema helpers --------------------------------------------------

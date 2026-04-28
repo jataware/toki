@@ -1,4 +1,4 @@
-from ..litellm.model import _LiteLLMModel
+from ..litellm.model import ReasoningEffort, _LiteLLMModel
 from .models import GoogleModelName
 
 
@@ -9,10 +9,19 @@ class GoogleModel(_LiteLLMModel):
     separate provider in litellm and is not wired up here.
     """
 
-    def __init__(self, model: GoogleModelName | str, *, api_key: str, allow_parallel_tool_calls: bool = False, cache: bool = False):
+    def __init__(
+        self,
+        model: GoogleModelName | str,
+        *,
+        api_key: str,
+        reasoning_effort: ReasoningEffort | None = None,
+        allow_parallel_tool_calls: bool = False,
+        cache: bool = False,
+    ):
         super().__init__(
             wire_model=f"gemini/{model}",
             api_key=api_key,
+            reasoning_effort=reasoning_effort,
             allow_parallel_tool_calls=allow_parallel_tool_calls,
             cache=cache,
         )

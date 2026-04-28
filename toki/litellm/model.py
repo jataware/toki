@@ -1,6 +1,6 @@
 import json
 import warnings
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 import litellm
 
@@ -23,6 +23,12 @@ from ..model import (
 # auto-drop the `thinking` param when they're missing rather than 400-ing.
 # See https://docs.litellm.ai/docs/reasoning_content
 litellm.modify_params = True
+
+
+# Server-side reasoning compute knob. Provider-supported subsets vary; the union below
+# covers every value any backend currently exposes. Pass `None` (the Python default) to
+# disable reasoning entirely — there is no string `'none'`.
+ReasoningEffort = Literal['minimal', 'low', 'medium', 'high', 'xhigh']
 
 
 def _tool_call_to_wire(tc: TokiToolCall) -> dict:
@@ -57,12 +63,21 @@ class _LiteLLMModel(BaseModel):
     api key through. Not user-facing on its own.
     """
 
-    def __init__(self, *, wire_model: str, api_key: str, allow_parallel_tool_calls: bool = False, cache: bool = False):
+    def __init__(
+        self,
+        *,
+        wire_model: str,
+        api_key: str,
+        reasoning_effort: ReasoningEffort | None = None,
+        allow_parallel_tool_calls: bool = False,
+        cache: bool = False,
+    ):
         super().__init__()
         if cache:
             warnings.warn("cache=True is not yet implemented; ignoring", stacklevel=2)
         self._wire_model = wire_model
         self.api_key = api_key
+        self.reasoning_effort = reasoning_effort
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
 
     def _build_kwargs(self, tools: list[dict] | None, capture_thinking: bool, kwargs: dict) -> dict:
@@ -70,8 +85,8 @@ class _LiteLLMModel(BaseModel):
         if tools:
             out["tools"] = tools
             out.setdefault("parallel_tool_calls", self.allow_parallel_tool_calls)
-        if capture_thinking and "reasoning_effort" not in out and "thinking" not in out:
-            out["reasoning_effort"] = "medium"
+        if self.reasoning_effort is not None and "reasoning_effort" not in out and "thinking" not in out:
+            out["reasoning_effort"] = self.reasoning_effort
         return out
 
     def _raw_blocking(
