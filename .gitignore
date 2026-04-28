@@ -8,3 +8,10 @@ __pycache__/
 # autoenv files
 .autoenv
 .autoleave
+
+
+# conversation history
+.chat
+
+# pytest auto-emitted HTML reports
+tests/results/

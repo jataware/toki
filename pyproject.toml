@@ -1,6 +1,6 @@
 [project]
 name = "toki"
-version = "0.2.8"
+version = "1.0.0"
 description = "Minimal universal LLM interface API"
 readme = "README.md"
 authors = [
@@ -8,9 +8,18 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "requests>=2.32.5",
     "typing-extensions>=4.15.0",
 ]
+
+[project.optional-dependencies]
+openrouter = ["requests>=2.32.5"]
+local = ["torch>=2.0", "transformers>=4.40"]
+litellm = ["litellm>=1.52"]
+openai = ["toki[litellm]"]
+google = ["toki[litellm]"]
+anthropic = ["toki[litellm]"]
+ollama = ["ollama>=0.6", "tqdm>=4"]
+all = ["toki[openrouter,local,openai,google,anthropic,ollama]"]
 
 [project.urls]
 "Repository" = "https://github.com/jataware/toki"
@@ -24,9 +33,34 @@ packages = ["toki"]
 
 [dependency-groups]
 dev = [
-    "easyrepl>=0.1.5",
+    "easyrepl>=0.2.0",
+    # used by the toki-fetch-local-models codegen script
+    "huggingface-hub>=0.20",
+    "tqdm>=4",
+    "pytest>=8",
+    "pytest-html>=4",
+    "beautifulsoup4>=4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `--html` is set dynamically by `tests/conftest.py:pytest_configure` to a
+# timestamped file under `tests/results/`. We still want self-contained reports
+# so they're a single portable file.
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--self-contained-html",
 ]
 
 [project.scripts]
 # Developer utility to regenerate the OpenRouter models file
-"toki-fetch-models" = "toki.openrouter_utils:_create_models_types_file"
+"toki-fetch-openrouter-models" = "toki.openrouter.fetch_models:_create_models_types_file"
+# Developer utility to regenerate the HuggingFace local-chat-models file
+"toki-fetch-local-models" = "toki.local.fetch_models:_create_models_types_file"
+# Developer utilities to regenerate per-provider models files from litellm metadata
+"toki-fetch-openai-models" = "toki.openai.fetch_models:_create_models_types_file"
+"toki-fetch-anthropic-models" = "toki.anthropic.fetch_models:_create_models_types_file"
+"toki-fetch-google-models" = "toki.google.fetch_models:_create_models_types_file"
+# Developer utility to regenerate the Ollama models file from the ollama.com registry
+"toki-fetch-ollama-models" = "toki.ollama.fetch_models:_create_models_types_file"

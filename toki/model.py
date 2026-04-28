@@ -1,0 +1,740 @@
+import json
+from abc import ABC, abstractmethod
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Generator, Generic, Iterator, Literal, Sequence, TypeVar, overload
+from uuid import uuid4
+
+from .jsonstream import JsonStreamParser
+
+
+Role = Literal["user", "assistant", "system", "tool"]
+
+
+# --- Wire / message / tool-call types ----------------------------------------
+
+@dataclass
+class TokiToolFunction:
+    name: str
+    arguments: dict
+
+    @classmethod
+    def from_dict(cls, x: 'TokiToolFunction | dict') -> 'TokiToolFunction':
+        if isinstance(x, cls):
+            return x
+        # provider wire formats (e.g. OpenAI/OpenRouter) deliver arguments as a JSON-encoded string;
+        # local backends already build a dict. Normalize to dict here.
+        args = x["arguments"]
+        if isinstance(args, str):
+            args = json.loads(args) if args else {}
+        return cls(name=x["name"], arguments=args)
+
+
+@dataclass
+class TokiToolCall:
+    id: str
+    function: TokiToolFunction
+    type: Literal["function"] = "function"
+
+    @classmethod
+    def from_dict(cls, x: 'TokiToolCall | dict') -> 'TokiToolCall':
+        if isinstance(x, cls):
+            return x
+        return cls(
+            id=x["id"],
+            type=x.get("type", "function"),
+            function=TokiToolFunction.from_dict(x["function"]),
+        )
+
+
+@dataclass
+class TokiMessage:
+    role: Role
+    content: str
+    tool_calls: list[TokiToolCall] | None = None
+    tool_call_id: str | None = None
+
+    @classmethod
+    def from_dict(cls, x: 'TokiMessage | dict') -> 'TokiMessage':
+        if isinstance(x, cls):
+            return x
+        tcs = x.get("tool_calls")
+        return cls(
+            role=x["role"],
+            content=x["content"],
+            tool_calls=[TokiToolCall.from_dict(t) for t in tcs] if tcs else None,
+            tool_call_id=x.get("tool_call_id"),
+        )
+
+
+@dataclass
+class TokiUsageMetadata:
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+# --- Tool-schema wrappers ----------------------------------------------------
+
+@dataclass
+class ToolSchema:
+    """Wrapper around a static (non-streaming) OpenAI-style tool schema.
+
+    Equivalent to passing a raw dict in the tools list; only used by callers that
+    want the explicit type annotation. Backends only ever see the unwrapped dict.
+    """
+    schema: dict
+
+
+@dataclass
+class StreamingToolSchema:
+    """Wrapper around a tool schema marking the tool as streaming.
+
+    When the model invokes this tool during `complete(stream=True)`, the call is
+    surfaced as a live `TokiToolCallStream` whose argument values can be consumed
+    incrementally via `expect_arg()` or `items()`. Required to opt into per-arg
+    streaming (a raw dict or `ToolSchema` is treated as static).
+    """
+    schema: dict
+
+
+# --- Streaming chunk types ---------------------------------------------------
+
+@dataclass
+class TokiThinking:
+    """Streaming chunk carrying a piece of the model's reasoning text. Only seen when `capture_thinking=True`."""
+    text: str
+
+
+# --- Per-arg / per-tool-call live streams ------------------------------------
+
+class TokiArgStream:
+    """A stream of one tool-call argument's value as it arrives.
+
+    Iterating yields decoded characters for top-level string values, and raw JSON
+    text fragments for everything else (numbers, booleans, null, arrays, objects).
+    `.value` returns the parsed Python value once the stream is exhausted (and
+    drains the stream as a side effect if it isn't already).
+
+    Single-shot: a `TokiArgStream` returned from `expect_arg(name)` or `items()`
+    is intended to be iterated once. Iterating after the underlying value has
+    finished arriving is a no-op.
+    """
+
+    def __init__(self, name: str, parent: 'TokiToolCallStream') -> None:
+        self.name = name
+        self._parent = parent
+        self._chunks: deque[str] = deque()
+        self._done: bool = False
+        self._value: Any = None
+        self._never_appeared: bool = False
+
+    def _push_chunk(self, chunk: str) -> None:
+        self._chunks.append(chunk)
+
+    def _close(self, value: Any) -> None:
+        self._done = True
+        self._value = value
+
+    def _mark_never_appeared(self) -> None:
+        self._never_appeared = True
+        self._done = True
+
+    def __iter__(self) -> Iterator[str]:
+        while True:
+            while self._chunks:
+                yield self._chunks.popleft()
+            if self._never_appeared:
+                raise RuntimeError(f"arg {self.name!r} never appeared in tool call")
+            if self._done:
+                return
+            advanced = self._parent._driver.advance()
+            if not advanced:
+                if self._chunks:
+                    continue
+                if self._done:
+                    return
+                raise RuntimeError(f"stream ended before arg {self.name!r} completed")
+
+    @property
+    def value(self) -> Any:
+        for _ in self:
+            pass
+        return self._value
+
+
+class TokiToolCallStream:
+    """A live stream of a single tool call.
+
+    Yielded once per streaming-tool invocation, as soon as the model has emitted
+    the call's id and name. Argument values can be consumed live via
+    `expect_arg(name)` or by iterating `items()`. Both are one-shot per stream
+    and mutually exclusive. After the stream is fully drained, `.arguments`
+    returns the parsed dict of all arguments.
+    """
+
+    def __init__(self, *, driver: '_StreamDriver', id: str, name: str) -> None:
+        self.id = id
+        self.name = name
+        self._driver = driver
+        # finalized parsed dict (filled when the underlying parser emits 'done')
+        self._dict: dict = {}
+        # arg names in the order they arrived (committed entries are those with a value in _args_values)
+        self._args_order: list[str] = []
+        # for each completed arg: chunks that were emitted (raw or decoded)
+        self._args_chunks: dict[str, list[str]] = {}
+        # for each completed arg: parsed Python value
+        self._args_values: dict[str, Any] = {}
+        # currently-streaming arg state
+        self._current_name: str | None = None
+        self._current_chunks: list[str] = []
+        # if the user has claimed the current arg, the live ArgStream
+        self._current_stream: TokiArgStream | None = None
+        # claims made before the arg arrived
+        self._pending_claims: dict[str, TokiArgStream] = {}
+        # one-shot enforcement
+        self._used: str | None = None  # 'expect_arg' | 'items'
+        self._expected_names: set[str] = set()
+        self._items_started: bool = False
+        # source/finalization
+        self._done: bool = False
+
+    # ----- driver-side wiring ------------------------------------------------
+
+    def _handle_event(self, ev: tuple) -> None:
+        kind = ev[0]
+        if kind == 'arg_start':
+            name: str = ev[1]
+            self._current_name = name
+            self._current_chunks = []
+            self._args_order.append(name)
+            claimed = self._pending_claims.pop(name, None)
+            self._current_stream = claimed
+        elif kind == 'arg_chunk':
+            chunk: str = ev[1]
+            self._current_chunks.append(chunk)
+            if self._current_stream is not None:
+                self._current_stream._push_chunk(chunk)
+        elif kind == 'arg_end':
+            value = ev[1]
+            assert self._current_name is not None
+            name = self._current_name
+            self._args_chunks[name] = list(self._current_chunks)
+            self._args_values[name] = value
+            self._dict[name] = value
+            if self._current_stream is not None:
+                self._current_stream._close(value)
+            self._current_name = None
+            self._current_chunks = []
+            self._current_stream = None
+        elif kind == 'done':
+            self._done = True
+            self._dict = ev[1]
+            # any never-appeared pending claims raise on iteration
+            for stream in self._pending_claims.values():
+                stream._mark_never_appeared()
+            self._pending_claims.clear()
+
+    def _mark_source_ended(self) -> None:
+        # underlying source went away before we got 'done'; signal pending claims
+        for stream in self._pending_claims.values():
+            stream._mark_never_appeared()
+        self._pending_claims.clear()
+        if self._current_stream is not None:
+            self._current_stream._mark_never_appeared()
+        self._done = True
+
+    # ----- public API --------------------------------------------------------
+
+    def expect_arg(self, name: str) -> TokiArgStream:
+        if self._used == 'items':
+            raise RuntimeError("expect_arg() cannot be called after items()")
+        self._used = 'expect_arg'
+        if name in self._expected_names:
+            raise RuntimeError(f"expect_arg({name!r}) already called")
+        self._expected_names.add(name)
+
+        if name in self._args_values:
+            stream = TokiArgStream(name, self)
+            for chunk in self._args_chunks[name]:
+                stream._push_chunk(chunk)
+            stream._close(self._args_values[name])
+            return stream
+
+        if self._current_name == name:
+            stream = TokiArgStream(name, self)
+            for chunk in self._current_chunks:
+                stream._push_chunk(chunk)
+            self._current_chunks = []
+            self._current_stream = stream
+            return stream
+
+        if self._done:
+            raise RuntimeError(f"arg {name!r} never appeared in tool call")
+
+        stream = TokiArgStream(name, self)
+        self._pending_claims[name] = stream
+        return stream
+
+    def items(self) -> Iterator[tuple[str, TokiArgStream]]:
+        if self._used == 'expect_arg':
+            raise RuntimeError("items() cannot be called after expect_arg()")
+        if self._items_started:
+            raise RuntimeError("items() can only be called once")
+        self._items_started = True
+        self._used = 'items'
+
+        emitted_idx = 0
+        # walk args in arrival order; new ones may be appended as we advance the driver
+        while True:
+            if emitted_idx < len(self._args_order):
+                name = self._args_order[emitted_idx]
+                emitted_idx += 1
+                if name in self._args_values:
+                    # already complete — single-shot replay
+                    stream = TokiArgStream(name, self)
+                    for chunk in self._args_chunks[name]:
+                        stream._push_chunk(chunk)
+                    stream._close(self._args_values[name])
+                    yield name, stream
+                    continue
+                # currently streaming — claim it live
+                stream = TokiArgStream(name, self)
+                for chunk in self._current_chunks:
+                    stream._push_chunk(chunk)
+                self._current_chunks = []
+                self._current_stream = stream
+                yield name, stream
+                # keep advancing until this arg completes (auto-drain on next iteration)
+                while not stream._done and not self._done:
+                    if not self._driver.advance():
+                        break
+                continue
+            # no pending arg; pull more from driver until a new arg starts or we're done
+            if self._done:
+                return
+            if not self._driver.advance():
+                return
+
+    @property
+    def arguments(self) -> dict:
+        # idempotent drain
+        while not self._done:
+            if not self._driver.advance():
+                break
+        # if there's a live current_stream still mid-arrival, drain it too
+        if self._current_stream is not None and not self._current_stream._done:
+            for _ in self._current_stream:
+                pass
+        return self._dict
+
+
+# --- Blocking response shapes ------------------------------------------------
+
+@dataclass
+class TokiThoughtResponse:
+    """Returned (blocking) when `capture_thinking=True` and the model invoked zero tools."""
+    content: str
+    thought: str
+
+
+T = TypeVar('T')
+
+
+@dataclass
+class TokiToolsResponse(Generic[T]):
+    """Returned (blocking) when the model invoked at least one tool, `capture_thinking=False`.
+
+    Element type `T` of `tool_calls` reflects the agent's tools shape:
+    - `WithStaticTools`     -> `T = TokiToolCall`
+    - `WithStreamingTools`  -> `T = TokiToolCallStream`
+    - `WithMixedTools`      -> `T = TokiToolCall | TokiToolCallStream`
+    """
+    content: str
+    tool_calls: list[T]
+
+
+@dataclass
+class TokiToolsThoughtResponse(TokiToolsResponse[T]):
+    """Same as `TokiToolsResponse[T]` plus a `thought` field. Returned when `capture_thinking=True`."""
+    thought: str = ''
+
+
+def pretty_tool_call(tool_call: TokiToolCall) -> str:
+    """Return a string representation of the tool call, i.e. `tool_name(arg1=value1, arg2=value2, ...)`"""
+    args_str = ", ".join(f"{k}={v}" for k, v in tool_call.function.arguments.items())
+    return f'{tool_call.function.name}({args_str})'
+
+
+# --- Internal raw-event types backends produce -------------------------------
+
+@dataclass
+class _RawTurn:
+    """Full assistant turn from a non-streaming API call. Backends build this in `_raw_blocking`."""
+    content: str
+    tool_calls: list[TokiToolCall]
+    thought: str
+    usage: TokiUsageMetadata | None = None
+
+
+@dataclass
+class _RawContentChunk:
+    text: str
+
+
+@dataclass
+class _RawThoughtChunk:
+    text: str
+
+
+@dataclass
+class _RawToolCallChunk:
+    """A streaming delta for one tool call. `id` and `name` are populated only on the
+    first chunk for a given `index`; `arguments_fragment` carries args JSON text as it
+    arrives."""
+    index: int
+    id: str | None = None
+    name: str | None = None
+    arguments_fragment: str | None = None
+
+
+@dataclass
+class _RawUsage:
+    usage: TokiUsageMetadata
+
+
+_RawChunk = _RawContentChunk | _RawThoughtChunk | _RawToolCallChunk | _RawUsage
+
+
+# --- Stream driver ----------------------------------------------------------
+
+@dataclass
+class _ToolState:
+    index: int
+    id: str
+    name: str
+    is_streaming: bool
+    parser: JsonStreamParser = field(default_factory=JsonStreamParser)
+    stream: TokiToolCallStream | None = None
+    finalized: bool = False
+
+
+class _StreamDriver:
+    """Owns a backend `Iterator[_RawChunk]` and translates it into the user-facing
+    yield types. Routes tool-call deltas by index, manages `TokiToolCallStream`
+    lifecycles, drives an internal `JsonStreamParser` per tool call, and supports
+    auto-draining of any unconsumed `TokiToolCallStream` between outer-yields.
+    """
+
+    def __init__(
+        self,
+        source: Iterator[_RawChunk],
+        streaming_names: set[str],
+        capture_thinking: bool,
+        on_usage: Any,  # callable(TokiUsageMetadata) -> None
+    ) -> None:
+        self._source = source
+        self._streaming_names = streaming_names
+        self._capture_thinking = capture_thinking
+        self._on_usage = on_usage
+        self._outer: deque = deque()
+        self._tool_state: dict[int, _ToolState] = {}
+        self._exhausted: bool = False
+
+    def advance(self) -> bool:
+        """Pull and process one `_RawChunk`. Returns False if source is exhausted."""
+        if self._exhausted:
+            return False
+        try:
+            chunk = next(self._source)
+        except StopIteration:
+            self._finalize_pending()
+            self._exhausted = True
+            return False
+        self._process(chunk)
+        return True
+
+    def _process(self, chunk: _RawChunk) -> None:
+        if isinstance(chunk, _RawContentChunk):
+            if chunk.text:
+                self._outer.append(chunk.text)
+            return
+        if isinstance(chunk, _RawThoughtChunk):
+            if self._capture_thinking and chunk.text:
+                self._outer.append(TokiThinking(text=chunk.text))
+            return
+        if isinstance(chunk, _RawToolCallChunk):
+            self._process_tool_chunk(chunk)
+            return
+        if isinstance(chunk, _RawUsage):
+            self._on_usage(chunk.usage)
+            return
+
+    def _process_tool_chunk(self, chunk: _RawToolCallChunk) -> None:
+        idx = chunk.index
+        state = self._tool_state.get(idx)
+        if state is None:
+            if chunk.name is None:
+                raise ValueError(f"first tool-call chunk for index {idx} missing name")
+            is_streaming = chunk.name in self._streaming_names
+            state = _ToolState(
+                index=idx,
+                id=chunk.id or f"toki-tool-{uuid4().hex}",
+                name=chunk.name,
+                is_streaming=is_streaming,
+            )
+            if is_streaming:
+                state.stream = TokiToolCallStream(driver=self, id=state.id, name=state.name)
+                self._outer.append(state.stream)
+            self._tool_state[idx] = state
+
+        if chunk.arguments_fragment:
+            self._feed_args(state, chunk.arguments_fragment)
+
+    def _feed_args(self, state: _ToolState, fragment: str) -> None:
+        for ev in state.parser.feed(fragment):
+            if state.is_streaming and state.stream is not None:
+                state.stream._handle_event(ev)
+            if ev[0] == 'done':
+                state.finalized = True
+                if not state.is_streaming:
+                    tc = TokiToolCall(
+                        id=state.id,
+                        function=TokiToolFunction(name=state.name, arguments=ev[1]),
+                    )
+                    self._outer.append(tc)
+
+    def _finalize_pending(self) -> None:
+        for state in self._tool_state.values():
+            if state.finalized:
+                continue
+            try:
+                # if the parser already saw the final '}', flush is a no-op; otherwise it raises
+                for ev in state.parser.flush():
+                    if state.is_streaming and state.stream is not None:
+                        state.stream._handle_event(ev)
+                    if ev[0] == 'done':
+                        state.finalized = True
+                        if not state.is_streaming:
+                            tc = TokiToolCall(
+                                id=state.id,
+                                function=TokiToolFunction(name=state.name, arguments=ev[1]),
+                            )
+                            self._outer.append(tc)
+            except ValueError:
+                pass
+            if state.is_streaming and state.stream is not None and not state.finalized:
+                state.stream._mark_source_ended()
+
+    # ----- outer iterator ----------------------------------------------------
+
+    def outer_generator(self) -> Generator:
+        last_stream: TokiToolCallStream | None = None
+        while True:
+            # auto-drain any previously-yielded streaming tool call
+            if last_stream is not None and not last_stream._done:
+                while not last_stream._done:
+                    if not self.advance():
+                        break
+            last_stream = None
+            if self._outer:
+                item = self._outer.popleft()
+                if isinstance(item, TokiToolCallStream):
+                    last_stream = item
+                yield item
+                continue
+            if self._exhausted:
+                return
+            if not self.advance():
+                # may have produced events on final advance via finalize_pending
+                continue
+
+
+# --- Schema helpers ----------------------------------------------------------
+
+def _unwrap_tools(tools: Sequence | None) -> tuple[list[dict] | None, set[str]]:
+    """Translate a list of `ToolSchema` / `StreamingToolSchema` / raw dicts into a
+    plain `list[dict]` (the wire format) and the set of streaming-tool names.
+    """
+    if tools is None:
+        return None, set()
+    raw_tools: list[dict] = []
+    streaming_names: set[str] = set()
+    for t in tools:
+        if isinstance(t, StreamingToolSchema):
+            raw_tools.append(t.schema)
+            streaming_names.add(t.schema["function"]["name"])
+        elif isinstance(t, ToolSchema):
+            raw_tools.append(t.schema)
+        elif isinstance(t, dict):
+            raw_tools.append(t)
+        else:
+            raise TypeError(f"unknown tool schema entry: {type(t).__name__}")
+    return raw_tools, streaming_names
+
+
+# --- BaseModel ---------------------------------------------------------------
+
+class BaseModel(ABC):
+    """Abstract base for all toki model backends.
+
+    Backends only implement the two raw-I/O methods `_raw_blocking` and
+    `_raw_streaming`. The base class owns:
+    - schema unwrapping (`ToolSchema` / `StreamingToolSchema` / raw dict -> wire dict)
+    - typed-response construction for the blocking path
+    - the `_StreamDriver` that turns raw `_RawChunk` events into the public yield
+      types (`str` / `TokiThinking` / `TokiToolCall` / `TokiToolCallStream`)
+    - all 16 typing overloads on the public `complete()` entry point
+    """
+
+    def __init__(self) -> None:
+        # updated after every completion
+        self._usage_metadata: TokiUsageMetadata | None = None
+
+    # ----- abstract raw-I/O methods ------------------------------------------
+
+    @abstractmethod
+    def _raw_blocking(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> _RawTurn: ...
+
+    @abstractmethod
+    def _raw_streaming(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> Iterator[_RawChunk]: ...
+
+    # ----- public `complete` overloads ---------------------------------------
+
+    # blocking, no thinking
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: None = None, capture_thinking: Literal[False] = False, **kwargs) -> str: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: Sequence[StreamingToolSchema], capture_thinking: Literal[False] = False, **kwargs) -> str | TokiToolsResponse[TokiToolCallStream]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: Sequence[ToolSchema | dict], capture_thinking: Literal[False] = False, **kwargs) -> str | TokiToolsResponse[TokiToolCall]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: Sequence[StreamingToolSchema | ToolSchema | dict], capture_thinking: Literal[False] = False, **kwargs) -> str | TokiToolsResponse[TokiToolCall | TokiToolCallStream]: ...
+    # blocking, capture_thinking
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: None = None, capture_thinking: Literal[True], **kwargs) -> TokiThoughtResponse: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: Sequence[StreamingToolSchema], capture_thinking: Literal[True], **kwargs) -> TokiThoughtResponse | TokiToolsThoughtResponse[TokiToolCallStream]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: Sequence[ToolSchema | dict], capture_thinking: Literal[True], **kwargs) -> TokiThoughtResponse | TokiToolsThoughtResponse[TokiToolCall]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[False] = False, tools: Sequence[StreamingToolSchema | ToolSchema | dict], capture_thinking: Literal[True], **kwargs) -> TokiThoughtResponse | TokiToolsThoughtResponse[TokiToolCall | TokiToolCallStream]: ...
+    # streaming, no thinking
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: None = None, capture_thinking: Literal[False] = False, **kwargs) -> Generator[str, None, None]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: Sequence[StreamingToolSchema], capture_thinking: Literal[False] = False, **kwargs) -> Generator[str | TokiToolCallStream, None, None]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: Sequence[ToolSchema | dict], capture_thinking: Literal[False] = False, **kwargs) -> Generator[str | TokiToolCall, None, None]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: Sequence[StreamingToolSchema | ToolSchema | dict], capture_thinking: Literal[False] = False, **kwargs) -> Generator[str | TokiToolCall | TokiToolCallStream, None, None]: ...
+    # streaming, capture_thinking
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: None = None, capture_thinking: Literal[True], **kwargs) -> Generator[str | TokiThinking, None, None]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: Sequence[StreamingToolSchema], capture_thinking: Literal[True], **kwargs) -> Generator[str | TokiThinking | TokiToolCallStream, None, None]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: Sequence[ToolSchema | dict], capture_thinking: Literal[True], **kwargs) -> Generator[str | TokiThinking | TokiToolCall, None, None]: ...
+    @overload
+    def complete(self, messages: list[TokiMessage | dict], *, stream: Literal[True], tools: Sequence[StreamingToolSchema | ToolSchema | dict], capture_thinking: Literal[True], **kwargs) -> Generator[str | TokiThinking | TokiToolCall | TokiToolCallStream, None, None]: ...
+
+    def complete(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        stream: bool = False,
+        tools: Sequence | None = None,
+        capture_thinking: bool = False,
+        **kwargs,
+    ):
+        normalized = [TokiMessage.from_dict(m) for m in messages]
+        wire_tools, streaming_names = _unwrap_tools(tools)
+        if stream:
+            source = self._raw_streaming(normalized, wire_tools, capture_thinking=capture_thinking, **kwargs)
+            driver = _StreamDriver(
+                source=source,
+                streaming_names=streaming_names,
+                capture_thinking=capture_thinking,
+                on_usage=self._record_usage,
+            )
+            return driver.outer_generator()
+        return self._build_blocking_response(
+            self._raw_blocking(normalized, wire_tools, capture_thinking=capture_thinking, **kwargs),
+            streaming_names=streaming_names,
+            capture_thinking=capture_thinking,
+        )
+
+    # ----- internals --------------------------------------------------------
+
+    def _record_usage(self, usage: TokiUsageMetadata) -> None:
+        self._usage_metadata = usage
+
+    def _build_blocking_response(
+        self,
+        turn: _RawTurn,
+        *,
+        streaming_names: set[str],
+        capture_thinking: bool,
+    ):
+        if turn.usage is not None:
+            self._usage_metadata = turn.usage
+
+        if not turn.tool_calls:
+            if capture_thinking:
+                return TokiThoughtResponse(content=turn.content, thought=turn.thought)
+            return turn.content
+
+        # at least one tool was invoked. wrap streaming-flagged ones into pre-drained
+        # `TokiToolCallStream`s so the surface matches the streaming case.
+        tool_calls_out: list = []
+        for tc in turn.tool_calls:
+            if tc.function.name in streaming_names:
+                tool_calls_out.append(_prebuilt_stream_from_tool_call(tc))
+            else:
+                tool_calls_out.append(tc)
+
+        if capture_thinking:
+            return TokiToolsThoughtResponse(content=turn.content, tool_calls=tool_calls_out, thought=turn.thought)
+        return TokiToolsResponse(content=turn.content, tool_calls=tool_calls_out)
+
+
+# --- helpers used internally -------------------------------------------------
+
+class _PrebuiltStreamDriver:
+    """Stand-in driver for pre-drained `TokiToolCallStream`s in blocking responses.
+    Has no live source, so `advance()` is a no-op returning False."""
+
+    def advance(self) -> bool:
+        return False
+
+
+_PREBUILT_DRIVER = _PrebuiltStreamDriver()
+
+
+def _prebuilt_stream_from_tool_call(tc: TokiToolCall) -> TokiToolCallStream:
+    """Build a `TokiToolCallStream` whose state is pre-populated from a finished
+    `TokiToolCall`. All `expect_arg` / `items()` calls become single-shot replays.
+    """
+    s = TokiToolCallStream(driver=_PREBUILT_DRIVER, id=tc.id, name=tc.function.name)  # type: ignore[arg-type]
+    args = tc.function.arguments
+    s._args_order = list(args.keys())
+    for k, v in args.items():
+        s._args_chunks[k] = [json.dumps(v) if not isinstance(v, str) else v]
+        s._args_values[k] = v
+    s._dict = dict(args)
+    s._done = True
+    return s
