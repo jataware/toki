@@ -18,7 +18,7 @@ litellm = ["litellm>=1.52"]
 openai = ["toki[litellm]"]
 google = ["toki[litellm]"]
 anthropic = ["toki[litellm]"]
-ollama = []
+ollama = ["ollama>=0.6", "tqdm>=4"]
 all = ["toki[openrouter,local,openai,google,anthropic,ollama]"]
 
 [project.urls]
@@ -39,6 +39,7 @@ dev = [
     "tqdm>=4",
     "pytest>=8",
     "pytest-html>=4",
+    "beautifulsoup4>=4",
 ]
 
 [tool.pytest.ini_options]
@@ -61,3 +62,5 @@ addopts = [
 "toki-fetch-openai-models" = "toki.openai.fetch_models:_create_models_types_file"
 "toki-fetch-anthropic-models" = "toki.anthropic.fetch_models:_create_models_types_file"
 "toki-fetch-google-models" = "toki.google.fetch_models:_create_models_types_file"
+# Developer utility to regenerate the Ollama models file from the ollama.com registry
+"toki-fetch-ollama-models" = "toki.ollama.fetch_models:_create_models_types_file"

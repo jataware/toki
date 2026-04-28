@@ -35,7 +35,7 @@ from .conftest import (
 )
 
 
-PROVIDERS = ["openrouter", "openai", "anthropic", "google", "local"]
+PROVIDERS = ["openrouter", "openai", "anthropic", "google", "local", "ollama"]
 TOOLS_SHAPES = ["none", "static", "streaming", "mixed"]
 
 

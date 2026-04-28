@@ -4,7 +4,36 @@
 
 Minimal, universal Python interface for talking to LLMs across backends.
 
-Pick a backend (e.g. OpenRouter, local `transformers`) and keep the same code path. Toki provides a tiny surface:
+```python
+from toki import LocalModel, Agent
+
+model = LocalModel("Qwen/Qwen3-0.6B")
+agent = Agent(model)
+agent.add_user_message("Hello, World!")
+
+for chunk in agent.execute(stream=True):
+    print(chunk, end="", flush=True)
+print()
+```
+
+## Feature Overview
+- streaming completions via generators
+- capturing model `thoughts`
+- tool support
+- 
+
+
+# Backends
+toki currently supports the following backends/model providers
+- Local (via huggingface/transformers)
+- OpenRouter
+- Ollama
+- OpenAI (via LiteLLM)
+- Anthropic (via LiteLLM)
+- Google (via LiteLLM)
+
+
+ and keep the same code path. Toki provides a tiny surface:
 - `<Provider>Model` for direct chat completions (blocking and streaming) — one concrete class per backend (e.g. `OpenRouterModel`, `LocalModel`), all sharing the `BaseModel` interface
 - `Agent` for conversation history (with optional tool-calling), works with any model
 - `StateMachine` and `ClassStateMachine` for simple agentic flows
@@ -22,6 +51,7 @@ pip install 'toki[local]'          # local models via transformers + torch
 pip install 'toki[openai]'         # OpenAI (via litellm)
 pip install 'toki[anthropic]'      # Anthropic Claude (via litellm)
 pip install 'toki[google]'         # Google Gemini AI Studio (via litellm)
+pip install 'toki[ollama]'         # local models via a running Ollama daemon
 pip install 'toki[all]'            # everything
 ```
 
@@ -78,6 +108,19 @@ agent = Agent(model)
 agent.add_user_message("Say hello in 5 words")
 print(agent.execute())
 ```
+
+### Ollama
+```python
+from toki import Agent, OllamaModel
+
+model = OllamaModel('qwen3:1.7b')        # any tag a local Ollama daemon can pull
+agent = Agent(model)
+
+agent.add_user_message("Say hello in 5 words")
+print(agent.execute())
+```
+
+`OllamaModel` talks to a locally-running Ollama daemon (default `http://127.0.0.1:11434`; honors `OLLAMA_HOST`, override with `host=...`). On construction it checks whether the requested tag is already pulled and, if not, pulls it with a tqdm progress bar before returning — so the first run on a new tag may take a while as the model downloads. Reasoning models like `qwen3` and `deepseek-r1` route `capture_thinking=True` to Ollama's native `think` parameter; tools work as on any other backend.
 
 ## Tools (function calling)
 Toki can pass OpenRouter-compatible tool schemas to the model. When a tool call is returned, you execute your function(s), then send tool responses back to the model via the `Agent`.
@@ -190,6 +233,8 @@ for chunk in agent.execute(stream=True):
 In blocking mode (`stream=False`), streaming-flagged tools still come back as `TokiToolCallStream` objects (pre-drained, so the only liveness is lost) for API symmetry — the same handler code works either way.
 
 Mixing static and streaming tools in the same `Agent` is fine; static tools yield as `TokiToolCall`, streaming tools as `TokiToolCallStream`.
+
+Backend nuance: against `OllamaModel`, streaming-flagged tools still yield `TokiToolCallStream` for API symmetry, but Ollama emits each tool call as a fully-formed object (id+name+arguments together) rather than as per-character argument deltas. Iterating a `TokiArgStream` from an Ollama call therefore yields the entire arg value in one chunk. The first time you pass a `StreamingToolSchema` to an `OllamaModel` in `stream=True` mode, toki emits a one-shot `UserWarning` to flag this.
 
 ## Capturing thinking
 Reasoning models (OpenAI o-series, Anthropic Claude with thinking, DeepSeek-R1, QwQ, Qwen3 thinking variants, etc.) produce internal "thinking" before their final answer. By default toki strips this — your stream stays a clean stream of answer text. Pass `capture_thinking=True` to surface it as `TokiThinking` chunks (streaming) or as a `thought` field on the response object (blocking).
@@ -328,7 +373,7 @@ Each backend lives under its own submodule and exposes a `<Provider>Model` class
 - `toki.OpenAIModel` — OpenAI chat models, dispatched through litellm (install `toki[openai]`)
 - `toki.AnthropicModel` — Anthropic Claude, dispatched through litellm (install `toki[anthropic]`)
 - `toki.GoogleModel` — Google Gemini AI Studio, dispatched through litellm (install `toki[google]`)
-- `toki.ollama` — not yet implemented
+- `toki.OllamaModel` — local models served by an [Ollama](https://ollama.com) daemon, with eager auto-pull on construction (install `toki[ollama]`)
 
 The litellm-backed frontends share a common implementation under `toki.litellm` (not user-facing). All three accept the same core constructor `(model, *, api_key, reasoning_effort=None, allow_parallel_tool_calls=False, cache=False)`:
 
@@ -362,4 +407,5 @@ Caveat: `OpenAIModel` does *not* reliably surface thoughts when `capture_thinkin
   - `toki-fetch-openrouter-models` – regenerate `toki/openrouter/models.py` from the live OpenRouter API
   - `toki-fetch-local-models` – regenerate `toki/local/models.py` from popular HuggingFace chat models
   - `toki-fetch-openai-models` / `toki-fetch-anthropic-models` / `toki-fetch-google-models` – regenerate the per-provider `models.py` snapshots from litellm's bundled metadata
+  - `toki-fetch-ollama-models` – regenerate `toki/ollama/models.py` by scraping the popular page of the Ollama library; merges new tags in and prunes any that have been removed from the registry
   - `uv version --bump <level>` where `<level>` is one of `major`, `minor`, or `patch`

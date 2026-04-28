@@ -39,6 +39,8 @@ _LAZY: dict[str, tuple[str, str]] = {
     'GoogleModel': ('toki.google', 'GoogleModel'),
     'GoogleModelName': ('toki.google', 'GoogleModelName'),
     'get_google_api_key': ('toki.google', 'get_google_api_key'),
+    'OllamaModel': ('toki.ollama', 'OllamaModel'),
+    'OllamaModelName': ('toki.ollama', 'OllamaModelName'),
 }
 
 
@@ -93,4 +95,6 @@ __all__ = [
     'GoogleModel',
     'GoogleModelName',
     'get_google_api_key',
+    'OllamaModel',
+    'OllamaModelName',
 ]

@@ -56,6 +56,7 @@ MODELS: dict[str, dict[str, str | None]] = {
     "anthropic":  {"default": "claude-haiku-4-5",             "reasoning": "claude-sonnet-4-5"},
     "google":     {"default": "gemini-2.5-flash",             "reasoning": "gemini-2.5-flash"},
     "local":      {"default": "Qwen/Qwen3-1.7B",              "reasoning": "Qwen/Qwen3-1.7B"},
+    "ollama":     {"default": "qwen3:1.7b",                   "reasoning": "qwen3:1.7b"},
 }
 
 
@@ -97,6 +98,14 @@ def make_model(provider: str, *, reasoning: bool):
         toki_mod = importlib.import_module("toki")
         LocalModel = toki_mod.LocalModel
         return LocalModel(name, allow_parallel_tool_calls=True)
+
+    if provider == "ollama":
+        toki_mod = importlib.import_module("toki")
+        OllamaModel = toki_mod.OllamaModel
+        try:
+            return OllamaModel(name)
+        except ConnectionError as e:
+            pytest.skip(f"ollama daemon not reachable: {e}")
 
     env_var, ctor_name = _HOSTED_PROVIDER_CONFIG[provider]
     if not os.getenv(env_var):
