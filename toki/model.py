@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Generator, Generic, Iterator, Literal, Sequence, TypeVar, overload
 from uuid import uuid4
 
-from ._jsonstream import JsonStreamParser
+from .jsonstream import JsonStreamParser
 
 
 Role = Literal["user", "assistant", "system", "tool"]

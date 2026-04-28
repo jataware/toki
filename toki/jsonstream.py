@@ -1,10 +1,14 @@
-"""Streaming JSON parser for top-level argument objects (tool-call args).
+"""Streaming JSON parser for one top-level object.
 
 Yields tagged events as input is fed via `feed()`. Top-level string values stream
 as post-decoded characters via `arg_chunk` events; other top-level value types
 (numbers, booleans, null, arrays, objects) stream as raw JSON text via
 `arg_chunk`. The parsed Python value of each arg is delivered in `arg_end`, and
 the full parsed object in `done`.
+
+Internally drives toki's tool-call argument streaming (hence the `arg_*` event
+names), but is also exposed at `toki.JsonStreamParser` for general use over any
+chunked JSON-object source.
 
 Strict mode only: any malformed input raises `ValueError` at the offending feed.
 """

@@ -437,75 +437,35 @@ Mixing static and streaming tools in the same `Agent` is fine: static tools yiel
 
 **Backend nuance: `OllamaModel`.** Ollama emits each tool call as a fully-formed object (id+name+arguments together) rather than as per-character argument deltas. `StreamingToolSchema` still works for API symmetry, but iterating a `TokiArgStream` from an Ollama call yields the entire arg value in one chunk. The first time you pass a `StreamingToolSchema` to an `OllamaModel` in `stream=True` mode, toki emits a one-shot `UserWarning`.
 
-## State Machines
+## Return types of `complete()` and `execute()`
 
-Toki includes lightweight state machines to structure multi-step interactions. They're "implicit" in that state transitions are controlled solely by the return value of each handler — there's no global graph definition.
+`BaseModel.complete()` and `Agent.execute()` are heavily overloaded so the static return type matches what's actually possible given the flags you passed. The three knobs that matter are `stream`, `capture_thinking`, and the *shape* of `tools=` (no tools, all `ToolSchema`, all `StreamingToolSchema`, or mixed).
 
-Function + context version:
-```python
-from enum import Enum, auto
-from dataclasses import dataclass
-from toki import StateMachine, END_STATE
+### Blocking (`stream=False`)
+Returns a single value:
 
-class State(Enum):
-    A = auto()
-    B = auto()
-    C = auto()
+| Tools                       | `capture_thinking=False`                                       | `capture_thinking=True`                                                                |
+|-----------------------------|----------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| none                        | `str`                                                          | `TokiThoughtResponse`                                                                  |
+| `ToolSchema` only           | `str \| TokiToolsResponse[TokiToolCall]`                       | `TokiThoughtResponse \| TokiToolsThoughtResponse[TokiToolCall]`                        |
+| `StreamingToolSchema` only  | `str \| TokiToolsResponse[TokiToolCallStream]`                 | `TokiThoughtResponse \| TokiToolsThoughtResponse[TokiToolCallStream]`                  |
+| mixed                       | `str \| TokiToolsResponse[TokiToolCall \| TokiToolCallStream]` | `TokiThoughtResponse \| TokiToolsThoughtResponse[TokiToolCall \| TokiToolCallStream]`  |
 
-@dataclass
-class Context:
-    name: str
+A bare `str` means the model gave a plain answer; a `TokiToolsResponse[T]` means the model invoked one or more tools (`response.tool_calls: list[T]`); a `TokiThoughtResponse` adds a `thought` field; a `TokiToolsThoughtResponse[T]` carries both `tool_calls` and `thought`.
 
-def a(ctx: Context):
-    print(f"{ctx.name} handling A")
-    return State.B
+### Streaming (`stream=True`)
+Returns a `Generator[<chunk type>, None, None]` yielding chunks of:
 
-def b(ctx: Context):
-    print(f"{ctx.name} handling B")
-    return State.C
+| Tools                       | `capture_thinking=False`                       | `capture_thinking=True`                                        |
+|-----------------------------|------------------------------------------------|----------------------------------------------------------------|
+| none                        | `str`                                          | `str \| TokiThinking`                                          |
+| `ToolSchema` only           | `str \| TokiToolCall`                          | `str \| TokiThinking \| TokiToolCall`                          |
+| `StreamingToolSchema` only  | `str \| TokiToolCallStream`                    | `str \| TokiThinking \| TokiToolCallStream`                    |
+| mixed                       | `str \| TokiToolCall \| TokiToolCallStream`    | `str \| TokiThinking \| TokiToolCall \| TokiToolCallStream`    |
 
-def c(ctx: Context):
-    print(f"{ctx.name} handling C")
-    return END_STATE
+Once the generator is exhausted the assistant turn (content + any tool calls) has been appended to `agent.messages`, regardless of which chunk types appeared along the way.
 
-sm = StateMachine(State, {State.A: a, State.B: b, State.C: c})
-for s in sm.run(State.A, context=Context("Alice")):
-    ...
-```
-
-Class-based version:
-```python
-from enum import Enum, auto
-from toki import ClassStateMachine, on, END_STATE
-
-class State(Enum):
-    A = auto(); B = auto(); C = auto()
-
-class Scenario:
-    def __init__(self, name: str):
-        self.name = name
-
-    @on(State.A)
-    def a(self):
-        print(f"{self.name} handling A")
-        return State.B
-
-    @on(State.B)
-    def b(self):
-        print(f"{self.name} handling B")
-        return State.C
-
-    @on(State.C)
-    def c(self):
-        print(f"{self.name} handling C")
-        return END_STATE
-
-sm = ClassStateMachine(Scenario("Bob"))
-for s in sm.run(State.A):
-    ...
-```
-
-Each handler returns the next `State` (or `END_STATE` to terminate). Pair this with a `BaseModel` or `Agent` inside each handler to build small ReAct-style flows where each state is a model call that decides what to do next.
+`Agent[ToolsShape]` mirrors the tools-shape rows: `Agent[WithoutTools]`, `Agent[WithStaticTools]`, `Agent[WithStreamingTools]`, `Agent[WithMixedTools]`. Specializing `Agent` narrows `agent.execute()`'s return type to the corresponding row instead of falling back to the full union.
 
 ## Helpers
 
@@ -581,6 +541,77 @@ Reference implementations:
 - [toki/litellm/model.py](toki/litellm/model.py) — wraps litellm; shared base for `OpenAIModel` / `AnthropicModel` / `GoogleModel`.
 - [toki/ollama/model.py](toki/ollama/model.py) — wraps the official `ollama` python client; demonstrates synthesizing a single-fragment tool-call delta for providers that emit whole tool calls.
 - [toki/local/transformers.py](toki/local/transformers.py) — fully local; demonstrates inline `<think>` tag parsing and `<tool_call>` envelope extraction without the help of a structured streaming protocol.
+
+### State machines
+
+Toki ships lightweight state machines for structuring multi-step interactions. They're "implicit" in that transitions are controlled solely by the return value of each handler — there's no global graph definition. Pair them with a `BaseModel` or `Agent` inside each handler to build small ReAct-style flows where each state is a model call that decides what comes next.
+
+Function + context version:
+```python
+from enum import Enum, auto
+from dataclasses import dataclass
+from toki import StateMachine, END_STATE
+
+class State(Enum):
+    A = auto()
+    B = auto()
+    C = auto()
+
+@dataclass
+class Context:
+    name: str
+
+def a(ctx: Context):
+    print(f"{ctx.name} handling A")
+    return State.B
+
+def b(ctx: Context):
+    print(f"{ctx.name} handling B")
+    return State.C
+
+def c(ctx: Context):
+    print(f"{ctx.name} handling C")
+    return END_STATE
+
+sm = StateMachine(State, {State.A: a, State.B: b, State.C: c})
+for s in sm.run(State.A, context=Context("Alice")):
+    ...
+```
+
+Class-based version:
+```python
+from enum import Enum, auto
+from toki import ClassStateMachine, on, END_STATE
+
+class State(Enum):
+    A = auto(); B = auto(); C = auto()
+
+class Scenario:
+    def __init__(self, name: str):
+        self.name = name
+
+    @on(State.A)
+    def a(self):
+        print(f"{self.name} handling A")
+        return State.B
+
+    @on(State.B)
+    def b(self):
+        print(f"{self.name} handling B")
+        return State.C
+
+    @on(State.C)
+    def c(self):
+        print(f"{self.name} handling C")
+        return END_STATE
+
+sm = ClassStateMachine(Scenario("Bob"))
+for s in sm.run(State.A):
+    ...
+```
+
+Each handler returns the next `State` (or `END_STATE` to terminate).
+
 
 ## Roadmap
 
