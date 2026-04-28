@@ -1,6 +1,7 @@
 import importlib
 
 from .agent import Agent, WithMixedTools, WithoutTools, WithStaticTools, WithStreamingTools
+from .jsonstream import JsonStreamParser
 from .model import (
     BaseModel,
     Role,
@@ -20,6 +21,16 @@ from .model import (
 )
 from .statemachine import ClassStateMachine, END_STATE, EndState, StateMachine, on
 
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .openrouter import OpenRouterModel, OpenRouterModelName, get_openrouter_api_key
+    from .local import LocalModel, LocalModelName
+    from .openai import OpenAIModel, OpenAIModelName, get_openai_api_key
+    from .anthropic import AnthropicModel, AnthropicModelName, get_anthropic_api_key
+    from .google import GoogleModel, GoogleModelName, get_google_api_key
+    from .ollama import OllamaModel, OllamaModelName
 
 # Per-provider symbols exposed at the top level. Loaded lazily via
 # module-level `__getattr__` so that backends with optional dependencies don't
@@ -58,6 +69,7 @@ def __dir__() -> list[str]:
 __all__ = [
     'Agent',
     'BaseModel',
+    'JsonStreamParser',
     'Role',
     'StreamingToolSchema',
     'TokiArgStream',
