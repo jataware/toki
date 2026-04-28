@@ -19,7 +19,13 @@ def fetch_provider_models(provider: str) -> list[dict]:
     up in `litellm.model_cost`, accepting either bare or prefixed keys. Drops
     rows that aren't chat-mode or that don't expose a context size.
     """
-    candidates: list[str] = list(litellm.models_by_provider.get(provider, []))
+    raw_candidates: list[str] = list(litellm.models_by_provider.get(provider, []))
+    # litellm's `models_by_provider` is inconsistent: some providers (notably
+    # `gemini`) list entries already prefixed (`gemini/gemini-2.0-flash`),
+    # others list bare names (`gpt-4o`). Normalize to bare names so users always
+    # construct `<Provider>Model('<bare>')` and the frontend prepends the prefix.
+    prefix = f"{provider}/"
+    candidates = [c[len(prefix):] if c.startswith(prefix) else c for c in raw_candidates]
     out: list[dict] = []
     seen: set[str] = set()
     for bare in candidates:

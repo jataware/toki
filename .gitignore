@@ -12,3 +12,6 @@ __pycache__/
 
 # conversation history
 .chat
+
+# pytest auto-emitted HTML reports
+tests/results/
