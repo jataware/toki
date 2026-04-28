@@ -14,9 +14,10 @@ dependencies = [
 [project.optional-dependencies]
 openrouter = ["requests>=2.32.5"]
 local = ["torch>=2.0", "transformers>=4.40"]
-openai = []
-google = []
-anthropic = []
+litellm = ["litellm>=1.52"]
+openai = ["toki[litellm]"]
+google = ["toki[litellm]"]
+anthropic = ["toki[litellm]"]
 ollama = []
 all = ["toki[openrouter,local,openai,google,anthropic,ollama]"]
 
@@ -43,3 +44,7 @@ dev = [
 "toki-fetch-openrouter-models" = "toki.openrouter.fetch_models:_create_models_types_file"
 # Developer utility to regenerate the HuggingFace local-chat-models file
 "toki-fetch-local-models" = "toki.local.fetch_models:_create_models_types_file"
+# Developer utilities to regenerate per-provider models files from litellm metadata
+"toki-fetch-openai-models" = "toki.openai.fetch_models:_create_models_types_file"
+"toki-fetch-anthropic-models" = "toki.anthropic.fetch_models:_create_models_types_file"
+"toki-fetch-google-models" = "toki.google.fetch_models:_create_models_types_file"

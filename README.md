@@ -19,6 +19,9 @@ Backend deps are split into extras. Install only what you need:
 ```bash
 pip install 'toki[openrouter]'     # OpenRouter HTTP API
 pip install 'toki[local]'          # local models via transformers + torch
+pip install 'toki[openai]'         # OpenAI (via litellm)
+pip install 'toki[anthropic]'      # Anthropic Claude (via litellm)
+pip install 'toki[google]'         # Google Gemini AI Studio (via litellm)
 pip install 'toki[all]'            # everything
 ```
 
@@ -322,7 +325,22 @@ Each backend lives under its own submodule and exposes a `<Provider>Model` class
 
 - `toki.OpenRouterModel` — hosted models via the OpenRouter HTTP API (install `toki[openrouter]`)
 - `toki.LocalModel` — local models via HuggingFace `transformers` + `torch` (install `toki[local]`)
-- `toki.openai`, `toki.google`, `toki.anthropic`, `toki.ollama` — not yet implemented
+- `toki.OpenAIModel` — OpenAI chat models, dispatched through litellm (install `toki[openai]`)
+- `toki.AnthropicModel` — Anthropic Claude, dispatched through litellm (install `toki[anthropic]`)
+- `toki.GoogleModel` — Google Gemini AI Studio, dispatched through litellm (install `toki[google]`)
+- `toki.ollama` — not yet implemented
+
+The litellm-backed frontends share a common implementation under `toki.litellm` (not user-facing). All take the same `(model, *, api_key, allow_parallel_tool_calls=False, cache=False)` constructor:
+
+```python
+from toki import OpenAIModel, AnthropicModel, GoogleModel, get_openai_api_key, get_anthropic_api_key, get_google_api_key, Agent
+
+openai = OpenAIModel('gpt-4o', api_key=get_openai_api_key())
+claude = AnthropicModel('claude-3-5-sonnet-20240620', api_key=get_anthropic_api_key())
+gemini = GoogleModel('gemini-1.5-pro', api_key=get_google_api_key())
+
+agent = Agent(openai)
+```
 
 `Agent` is backend-agnostic and accepts any `BaseModel`. If you're writing a new backend, subclass `toki.BaseModel` and implement just two methods — `_raw_blocking` (returns a `_RawTurn`) and `_raw_streaming` (yields `_RawContentChunk` / `_RawThoughtChunk` / `_RawToolCallChunk` / `_RawUsage`). All public-facing types, schema unwrapping, and streaming JSON parsing happen in the base class.
 
@@ -330,5 +348,7 @@ Each backend lives under its own submodule and exposes a `<Provider>Model` class
 - Python ≥ 3.10
 - Optional dev deps: `pip install 'toki[dev]'`
 - Useful scripts:
-  - `toki-fetch-models` – regenerate model types from OpenRouter
+  - `toki-fetch-openrouter-models` – regenerate `toki/openrouter/models.py` from the live OpenRouter API
+  - `toki-fetch-local-models` – regenerate `toki/local/models.py` from popular HuggingFace chat models
+  - `toki-fetch-openai-models` / `toki-fetch-anthropic-models` / `toki-fetch-google-models` – regenerate the per-provider `models.py` snapshots from litellm's bundled metadata
   - `uv version --bump <level>` where `<level>` is one of `major`, `minor`, or `patch`

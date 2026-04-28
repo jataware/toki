@@ -30,6 +30,15 @@ _LAZY: dict[str, tuple[str, str]] = {
     'get_openrouter_api_key': ('toki.openrouter', 'get_openrouter_api_key'),
     'LocalModel': ('toki.local', 'LocalModel'),
     'LocalModelName': ('toki.local', 'LocalModelName'),
+    'OpenAIModel': ('toki.openai', 'OpenAIModel'),
+    'OpenAIModelName': ('toki.openai', 'OpenAIModelName'),
+    'get_openai_api_key': ('toki.openai', 'get_openai_api_key'),
+    'AnthropicModel': ('toki.anthropic', 'AnthropicModel'),
+    'AnthropicModelName': ('toki.anthropic', 'AnthropicModelName'),
+    'get_anthropic_api_key': ('toki.anthropic', 'get_anthropic_api_key'),
+    'GoogleModel': ('toki.google', 'GoogleModel'),
+    'GoogleModelName': ('toki.google', 'GoogleModelName'),
+    'get_google_api_key': ('toki.google', 'get_google_api_key'),
 }
 
 
@@ -75,4 +84,13 @@ __all__ = [
     'get_openrouter_api_key',
     'LocalModel',
     'LocalModelName',
+    'OpenAIModel',
+    'OpenAIModelName',
+    'get_openai_api_key',
+    'AnthropicModel',
+    'AnthropicModelName',
+    'get_anthropic_api_key',
+    'GoogleModel',
+    'GoogleModelName',
+    'get_google_api_key',
 ]
