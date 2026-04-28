@@ -31,11 +31,11 @@ from .conftest import (
 
 
 def _agent_model():
-    return make_model("openai", reasoning=False)
+    return make_model("google", reasoning=False)
 
 
 def _reasoning_agent_model():
-    return make_model("openai", reasoning=True)
+    return make_model("google", reasoning=True)
 
 
 def test_agent_simple_round_trip():
@@ -59,9 +59,12 @@ def test_agent_static_tool_round_trip():
     """Static tool round-trip: model calls tool, we add a tool result, model replies."""
     tool = make_static_schema("record_value", "value")
     agent: Agent[WithStaticTools] = Agent(_agent_model(), tools=[tool])
+    # NOTE: no "do not respond with other text" gag — that tends to make Anthropic
+    # and Google stay silent on the second turn too, which fails the final-string
+    # assertion below. Without the gag the model still calls the tool first then
+    # acknowledges the tool result on turn 2.
     agent.add_user_message(
-        f'Call the record_value tool with value="{SENTINEL_VALUE}". '
-        "Do not respond with any other text."
+        f'Please call the record_value tool with value="{SENTINEL_VALUE}".'
     )
 
     first = agent.execute()
@@ -89,8 +92,7 @@ def test_agent_streaming_tool_round_trip():
     tool = make_streaming_schema("record_value", "value")
     agent: Agent[WithStreamingTools] = Agent(_agent_model(), tools=[tool])
     agent.add_user_message(
-        f'Call the record_value tool with value="{SENTINEL_VALUE}". '
-        "Do not respond with any other text."
+        f'Please call the record_value tool with value="{SENTINEL_VALUE}".'
     )
 
     drained = drain_stream(agent.execute(stream=True), expected_arg_names={"record_value": "value"})
