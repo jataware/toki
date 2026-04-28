@@ -1,40 +1,58 @@
-from typing import Generator, Generic, Literal, TypeVar, cast, overload
+from typing import Generator, Generic, Literal, Sequence, TypeVar, cast, overload
 
 from .model import (
     BaseModel,
     Role,
-    TokiChatResponse,
+    StreamingToolSchema,
     TokiMessage,
     TokiThinking,
+    TokiThoughtResponse,
     TokiToolCall,
-    TokiToolResponse,
+    TokiToolCallStream,
+    TokiToolFunction,
+    TokiToolsResponse,
+    TokiToolsThoughtResponse,
+    ToolSchema,
 )
 
 
-# set up type-hinting such that if the user doesn't provide tools, then it's just str, not str|TokiToolResponse
-class WithTools: ...
+# Tools-shape markers for static-typing the Agent's capabilities.
 class WithoutTools: ...
-HasTools = TypeVar('HasTools', WithTools, WithoutTools)
+class WithStaticTools: ...
+class WithStreamingTools: ...
+class WithMixedTools: ...
+
+ToolsShape = TypeVar('ToolsShape', WithoutTools, WithStaticTools, WithStreamingTools, WithMixedTools)
+WithTools = WithStaticTools | WithStreamingTools | WithMixedTools  # convenience union
 
 
 # TODO: consider renaming to e.g. Chat or something similar, and reserve Agent for ReAct agents
-class Agent(Generic[HasTools]):
-    """Basically just a model paired with message history tracking"""
+class Agent(Generic[ToolsShape]):
+    """A model paired with message-history tracking. The tools-shape type parameter
+    tracks whether the agent has no tools (`WithoutTools`), static-only tools
+    (`WithStaticTools`), streaming-only tools (`WithStreamingTools`), or a mix
+    (`WithMixedTools`); `execute()`'s return types specialize accordingly.
+    """
+
     @overload
     def __init__(self: 'Agent[WithoutTools]', model: BaseModel, tools: None = None): ...
     @overload
-    def __init__(self: 'Agent[WithTools]', model: BaseModel, tools: list): ...
-    def __init__(self, model: BaseModel, tools: list | None = None):
+    def __init__(self: 'Agent[WithStreamingTools]', model: BaseModel, tools: Sequence[StreamingToolSchema]): ...
+    @overload
+    def __init__(self: 'Agent[WithStaticTools]', model: BaseModel, tools: Sequence[ToolSchema | dict]): ...
+    @overload
+    def __init__(self: 'Agent[WithMixedTools]', model: BaseModel, tools: Sequence[StreamingToolSchema | ToolSchema | dict]): ...
+    def __init__(self, model: BaseModel, tools: Sequence | None = None):
         self.model = model
         self.messages: list[TokiMessage] = []
         self.tools = tools
 
     @overload
-    def add_message(self: 'Agent[WithTools]|Agent[WithoutTools]', *, role: Role, content: str): ...
+    def add_message(self, *, role: Role, content: str): ...
     @overload
-    def add_message(self: 'Agent[WithTools]', *, role: Role, content: str, tool_call_id: str): ...
+    def add_message(self, *, role: Role, content: str, tool_call_id: str): ...
     @overload
-    def add_message(self: 'Agent[WithTools]', *, role: Role, content: str, tool_calls: list[TokiToolCall | dict]): ...
+    def add_message(self, *, role: Role, content: str, tool_calls: list[TokiToolCall | dict]): ...
     def add_message(self, *, role: Role, content: str, tool_calls: list[TokiToolCall | dict] | None = None, tool_call_id: str | None = None):
         assert tool_calls is None or tool_call_id is None, "tool_calls and tool_call_id cannot both be provided"
         if tool_calls:
@@ -45,99 +63,119 @@ class Agent(Generic[HasTools]):
             message = TokiMessage(role=role, content=content)
         self.messages.append(message)
 
-    def add_user_message(self: 'Agent[WithTools]|Agent[WithoutTools]', content: str):
+    def add_user_message(self, content: str):
         self.add_message(role='user', content=content)
 
-    def add_assistant_message(self: 'Agent[WithTools]|Agent[WithoutTools]', content: str):
+    def add_assistant_message(self, content: str):
         self.add_message(role='assistant', content=content)
 
-    def add_assistant_tool_calls(self: 'Agent[WithTools]', content: str, tool_calls: list[TokiToolCall | dict]):
+    def add_assistant_tool_calls(self: 'Agent[WithStaticTools] | Agent[WithStreamingTools] | Agent[WithMixedTools]', content: str, tool_calls: list[TokiToolCall | dict]):
         self.add_message(role='assistant', content=content, tool_calls=tool_calls)
 
-    def add_tool_message(self: 'Agent[WithTools]', tool_call_id: str, content: str):
+    def add_tool_message(self: 'Agent[WithStaticTools] | Agent[WithStreamingTools] | Agent[WithMixedTools]', tool_call_id: str, content: str):
         self.add_message(role='tool', tool_call_id=tool_call_id, content=content)
 
-    def add_system_message(self: 'Agent[WithTools]|Agent[WithoutTools]', content: str):
+    def add_system_message(self, content: str):
         self.add_message(role='system', content=content)
 
-    # blocking
-    @overload
-    def execute(self: 'Agent[WithTools]', stream: Literal[False] = False, *, capture_thinking: Literal[False] = False) -> str | TokiToolResponse: ...
+    # ----- execute: 16 overloads ------------------------------------------------
+
+    # blocking, capture_thinking=False
     @overload
     def execute(self: 'Agent[WithoutTools]', stream: Literal[False] = False, *, capture_thinking: Literal[False] = False) -> str: ...
     @overload
-    def execute(self: 'Agent[WithTools]', stream: Literal[False] = False, *, capture_thinking: Literal[True]) -> TokiChatResponse | TokiToolResponse: ...
+    def execute(self: 'Agent[WithStaticTools]', stream: Literal[False] = False, *, capture_thinking: Literal[False] = False) -> str | TokiToolsResponse[TokiToolCall]: ...
     @overload
-    def execute(self: 'Agent[WithoutTools]', stream: Literal[False] = False, *, capture_thinking: Literal[True]) -> TokiChatResponse: ...
-    # streaming
+    def execute(self: 'Agent[WithStreamingTools]', stream: Literal[False] = False, *, capture_thinking: Literal[False] = False) -> str | TokiToolsResponse[TokiToolCallStream]: ...
     @overload
-    def execute(self: 'Agent[WithTools]', stream: Literal[True], *, capture_thinking: Literal[False] = False) -> Generator[str | TokiToolResponse, None, None]: ...
+    def execute(self: 'Agent[WithMixedTools]', stream: Literal[False] = False, *, capture_thinking: Literal[False] = False) -> str | TokiToolsResponse[TokiToolCall | TokiToolCallStream]: ...
+    # blocking, capture_thinking=True
+    @overload
+    def execute(self: 'Agent[WithoutTools]', stream: Literal[False] = False, *, capture_thinking: Literal[True]) -> TokiThoughtResponse: ...
+    @overload
+    def execute(self: 'Agent[WithStaticTools]', stream: Literal[False] = False, *, capture_thinking: Literal[True]) -> TokiThoughtResponse | TokiToolsThoughtResponse[TokiToolCall]: ...
+    @overload
+    def execute(self: 'Agent[WithStreamingTools]', stream: Literal[False] = False, *, capture_thinking: Literal[True]) -> TokiThoughtResponse | TokiToolsThoughtResponse[TokiToolCallStream]: ...
+    @overload
+    def execute(self: 'Agent[WithMixedTools]', stream: Literal[False] = False, *, capture_thinking: Literal[True]) -> TokiThoughtResponse | TokiToolsThoughtResponse[TokiToolCall | TokiToolCallStream]: ...
+    # streaming, capture_thinking=False
     @overload
     def execute(self: 'Agent[WithoutTools]', stream: Literal[True], *, capture_thinking: Literal[False] = False) -> Generator[str, None, None]: ...
     @overload
-    def execute(self: 'Agent[WithTools]', stream: Literal[True], *, capture_thinking: Literal[True]) -> Generator[str | TokiThinking | TokiToolResponse, None, None]: ...
+    def execute(self: 'Agent[WithStaticTools]', stream: Literal[True], *, capture_thinking: Literal[False] = False) -> Generator[str | TokiToolCall, None, None]: ...
+    @overload
+    def execute(self: 'Agent[WithStreamingTools]', stream: Literal[True], *, capture_thinking: Literal[False] = False) -> Generator[str | TokiToolCallStream, None, None]: ...
+    @overload
+    def execute(self: 'Agent[WithMixedTools]', stream: Literal[True], *, capture_thinking: Literal[False] = False) -> Generator[str | TokiToolCall | TokiToolCallStream, None, None]: ...
+    # streaming, capture_thinking=True
     @overload
     def execute(self: 'Agent[WithoutTools]', stream: Literal[True], *, capture_thinking: Literal[True]) -> Generator[str | TokiThinking, None, None]: ...
-    def execute(
-        self: 'Agent[WithTools]|Agent[WithoutTools]',
-        stream: bool = False,
-        *,
-        capture_thinking: bool = False,
-    ) -> str | TokiChatResponse | TokiToolResponse | Generator[str | TokiThinking | TokiToolResponse, None, None]:
+    @overload
+    def execute(self: 'Agent[WithStaticTools]', stream: Literal[True], *, capture_thinking: Literal[True]) -> Generator[str | TokiThinking | TokiToolCall, None, None]: ...
+    @overload
+    def execute(self: 'Agent[WithStreamingTools]', stream: Literal[True], *, capture_thinking: Literal[True]) -> Generator[str | TokiThinking | TokiToolCallStream, None, None]: ...
+    @overload
+    def execute(self: 'Agent[WithMixedTools]', stream: Literal[True], *, capture_thinking: Literal[True]) -> Generator[str | TokiThinking | TokiToolCall | TokiToolCallStream, None, None]: ...
+
+    def execute(self, stream: bool = False, *, capture_thinking: bool = False):
         if stream:
             return self._streaming_execute(capture_thinking=capture_thinking)
         return self._blocking_execute(capture_thinking=capture_thinking)
 
-    @overload
-    def _blocking_execute(self: 'Agent[WithTools]', *, capture_thinking: Literal[False] = False) -> str | TokiToolResponse: ...
-    @overload
-    def _blocking_execute(self: 'Agent[WithoutTools]', *, capture_thinking: Literal[False] = False) -> str: ...
-    @overload
-    def _blocking_execute(self: 'Agent[WithTools]', *, capture_thinking: Literal[True]) -> TokiChatResponse | TokiToolResponse: ...
-    @overload
-    def _blocking_execute(self: 'Agent[WithoutTools]', *, capture_thinking: Literal[True]) -> TokiChatResponse: ...
-    def _blocking_execute(self: 'Agent[WithTools]|Agent[WithoutTools]', *, capture_thinking: bool = False) -> str | TokiChatResponse | TokiToolResponse:
-        # if here is mainly for type hinting since apparently it doesn't know how to merge the cases where self.tools is None|list
+    def _blocking_execute(self, *, capture_thinking: bool):
         if self.tools is None:
             result = self.model.complete(self.messages, stream=False, capture_thinking=capture_thinking)
         else:
             result = self.model.complete(self.messages, stream=False, tools=self.tools, capture_thinking=capture_thinking)
+
         if isinstance(result, str):
             self.add_assistant_message(result)
-        elif isinstance(result, TokiChatResponse):
+            return result
+        if isinstance(result, TokiThoughtResponse):
             self.add_assistant_message(result.content)
-        else:
-            self = cast(Agent[WithTools], self)  # TODO: is there a better way to narrow this
-            self.add_assistant_tool_calls(result.thought, result.tool_calls)
+            return result
+        # at this point: TokiToolsResponse / TokiToolsThoughtResponse
+        materialized = [_materialize_tool_call(tc) for tc in result.tool_calls]
+        self_with_tools = cast('Agent[WithStaticTools]', self)
+        self_with_tools.add_assistant_tool_calls(result.content, materialized)
         return result
 
-    @overload
-    def _streaming_execute(self: 'Agent[WithTools]', *, capture_thinking: Literal[False] = False) -> Generator[str | TokiToolResponse, None, None]: ...
-    @overload
-    def _streaming_execute(self: 'Agent[WithoutTools]', *, capture_thinking: Literal[False] = False) -> Generator[str, None, None]: ...
-    @overload
-    def _streaming_execute(self: 'Agent[WithTools]', *, capture_thinking: Literal[True]) -> Generator[str | TokiThinking | TokiToolResponse, None, None]: ...
-    @overload
-    def _streaming_execute(self: 'Agent[WithoutTools]', *, capture_thinking: Literal[True]) -> Generator[str | TokiThinking, None, None]: ...
-    def _streaming_execute(self: 'Agent[WithTools]|Agent[WithoutTools]', *, capture_thinking: bool = False) -> Generator[str | TokiThinking | TokiToolResponse, None, None]:
-        # stream the chunks while also capturing them
-        result_chunks: list[str] = []
-        tool_responses: list[TokiToolResponse] = []
-        for chunk in self.model.complete(self.messages, stream=True, tools=self.tools, capture_thinking=capture_thinking):
-            if isinstance(chunk, TokiToolResponse):
-                tool_responses.append(chunk)
-            elif isinstance(chunk, TokiThinking):
-                pass  # ephemeral; not added to message history
-            else:
-                result_chunks.append(chunk)
+    def _streaming_execute(self, *, capture_thinking: bool):
+        content_chunks: list[str] = []
+        tool_calls: list[TokiToolCall] = []
+        streams: list[TokiToolCallStream] = []
+
+        if self.tools is None:
+            source = self.model.complete(self.messages, stream=True, capture_thinking=capture_thinking)
+        else:
+            source = self.model.complete(self.messages, stream=True, tools=self.tools, capture_thinking=capture_thinking)
+
+        for chunk in source:
+            if isinstance(chunk, str):
+                content_chunks.append(chunk)
+            elif isinstance(chunk, TokiToolCall):
+                tool_calls.append(chunk)
+            elif isinstance(chunk, TokiToolCallStream):
+                streams.append(chunk)
+            # TokiThinking is ephemeral; not added to history
             yield chunk
 
-        # add the message to the history after streaming is done
-        if tool_responses:
-            self = cast(Agent[WithTools], self)  # TODO: is there a better way to narrow this
-            for tool_response in tool_responses:
-                self.add_assistant_tool_calls(tool_response.thought, tool_response.tool_calls)
-            if result_chunks:
-                self.add_assistant_message(''.join(result_chunks))
+        # any unconsumed streaming tool calls — drain them now to materialize args for history
+        for s in streams:
+            tool_calls.append(_materialize_tool_call(s))
+
+        content = ''.join(content_chunks)
+        if tool_calls:
+            self_with_tools = cast('Agent[WithStaticTools]', self)
+            self_with_tools.add_assistant_tool_calls(content, tool_calls)
         else:
-            self.add_assistant_message(''.join(result_chunks))
+            self.add_assistant_message(content)
+
+
+def _materialize_tool_call(tc: TokiToolCall | TokiToolCallStream) -> TokiToolCall:
+    """Convert a tool-call entry from a response into a concrete `TokiToolCall`. For
+    a `TokiToolCallStream` this drains the stream (idempotent) and reads the parsed
+    arguments dict."""
+    if isinstance(tc, TokiToolCall):
+        return tc
+    return TokiToolCall(id=tc.id, function=TokiToolFunction(name=tc.name, arguments=tc.arguments))

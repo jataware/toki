@@ -9,11 +9,11 @@ import json
 import logging
 import warnings
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from easyrepl import REPL
 
-from toki import Agent, LocalModel, TokiToolCall, TokiToolResponse, pretty_tool_call
+from toki import Agent, LocalModel, TokiToolCall, ToolSchema, WithStaticTools, pretty_tool_call
 
 
 LOG_LEVEL = logging.INFO
@@ -22,7 +22,7 @@ logger.propagate = False
 
 
 def get_current_time() -> dict[str, str]:
-    return {"utc_time": datetime.now(UTC).isoformat()}
+    return {"utc_time": datetime.now(timezone.utc).isoformat()}
 
 
 def add_numbers(a: float, b: float) -> dict[str, float]:
@@ -30,7 +30,7 @@ def add_numbers(a: float, b: float) -> dict[str, float]:
 
 
 TOOL_SCHEMAS = [
-    {
+    ToolSchema({
         "type": "function",
         "function": {
             "name": "get_current_time",
@@ -41,8 +41,8 @@ TOOL_SCHEMAS = [
                 "required": [],
             },
         },
-    },
-    {
+    }),
+    ToolSchema({
         "type": "function",
         "function": {
             "name": "add_numbers",
@@ -56,7 +56,7 @@ TOOL_SCHEMAS = [
                 "required": ["a", "b"],
             },
         },
-    },
+    }),
 ]
 
 
@@ -69,28 +69,20 @@ TOOLS_BY_NAME: dict[str, Callable[..., object]] = {
 def execute_tool_call(tool_call: TokiToolCall) -> str:
     function_name = tool_call.function.name
     function = TOOLS_BY_NAME[function_name]
-    arguments = json.loads(tool_call.function.arguments)
-    result = function(**arguments)
+    result = function(**tool_call.function.arguments)
     result_json = json.dumps(result)
     logger.info("Tool result for %s: %s", pretty_tool_call(tool_call), result_json)
     return result_json
 
 
-def run_agent_turn(agent: Agent) -> str:
+def run_agent_turn(agent: Agent[WithStaticTools]) -> str:
     while True:
         result_chunks: list[str] = []
-        tool_response: TokiToolResponse | None = None
+        tool_calls: list[TokiToolCall] = []
 
-        if agent.tools is None:
-            for chunk in agent.execute(stream=True):
-                print(chunk, end="", flush=True)
-                result_chunks.append(chunk)
-            print()
-            return "".join(result_chunks)
-
-        for chunk in agent.model.complete(agent.messages, stream=True, tools=agent.tools):
-            if isinstance(chunk, TokiToolResponse):
-                tool_response = chunk
+        for chunk in agent.execute(stream=True):
+            if isinstance(chunk, TokiToolCall):
+                tool_calls.append(chunk)
             elif isinstance(chunk, str):
                 print(chunk, end="", flush=True)
                 result_chunks.append(chunk)
@@ -99,13 +91,10 @@ def run_agent_turn(agent: Agent) -> str:
             print()
 
         assistant_text = "".join(result_chunks)
-        if tool_response is None:
-            agent.add_assistant_message(assistant_text)
+        if not tool_calls:
             return assistant_text
 
-        agent.add_assistant_tool_calls(tool_response.thought, tool_response.tool_calls)
-
-        for tool_call in tool_response.tool_calls:
+        for tool_call in tool_calls:
             logger.info("Tool call: %s", pretty_tool_call(tool_call))
             tool_result = execute_tool_call(tool_call)
             agent.add_tool_message(tool_call.id, tool_result)
