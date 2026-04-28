@@ -44,11 +44,11 @@ from toki import (
 # supports tool calls and reasoning via its chat template, so it serves as both
 # default and reasoning entry for the local backend.
 MODELS: dict[str, dict[str, str | None]] = {
-    "openrouter": {"default": "openai/gpt-4o-mini",      "reasoning": "openai/o4-mini"},
-    "openai":     {"default": "gpt-4o-mini",             "reasoning": "o4-mini"},
+    "openrouter": {"default": "openai/gpt-5-mini",      "reasoning": "openai/gpt-5-mini"},
+    "openai":     {"default": "gpt-5-mini",             "reasoning": "gpt-5-mini"},
     "anthropic":  {"default": "claude-haiku-4-5",        "reasoning": "claude-sonnet-4-5"},
     "google":     {"default": "gemini-2.5-flash",        "reasoning": "gemini-2.5-flash"},
-    "local":      {"default": "Qwen/Qwen3-0.6B",         "reasoning": "Qwen/Qwen3-0.6B"},
+    "local":      {"default": "Qwen/Qwen3-1.7B",         "reasoning": "Qwen/Qwen3-1.7B"},
 }
 
 
