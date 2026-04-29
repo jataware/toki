@@ -6,7 +6,7 @@ from uuid import uuid4
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from ..jsonstream import JsonStreamParser
+from .._jsonstream import JsonStreamParser
 from ..model import (
     BaseModel,
     TokiMessage,

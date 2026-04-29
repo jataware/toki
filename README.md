@@ -35,7 +35,7 @@ pip install 'toki[local]'          # local models via HuggingFace transformers +
 pip install 'toki[all]'            # everything
 ```
 
-Plain `pip install toki` installs only the backend-agnostic core (`BaseModel`, `Agent`, types, state machines, `JsonStreamParser`).
+Plain `pip install toki` installs only the backend-agnostic core (`BaseModel`, `Agent`, types, state machines, `streaming_parse_json`).
 
 ## Basic Use Cases
 
@@ -486,25 +486,57 @@ key = get_openrouter_api_key()  # raises ValueError if env var unset
 
 ### Streaming JSON parsing
 
-Toki ships a single-object streaming JSON parser, used internally to drive `TokiArgStream` / `TokiToolCallStream`. There are two ways into it:
-
-**Inside a tool call** — use `TokiToolCallStream.expect_arg(name)` / `items()` to consume one argument's value as it arrives. See [Streaming Tools](#streaming-tools). This is what you want 95% of the time.
-
-**Outside a tool call** — `JsonStreamParser` is exposed at the top level for arbitrary streamed-JSON sources (e.g. parsing JSON from a custom HTTP stream). Feed it text in any chunk size; it yields tagged events as keys and values become available:
+Toki ships a general-purpose pull-based streaming JSON parser. Hand `streaming_parse_json` an iterable of string chunks; it identifies the next JSON value and either returns the parsed primitive directly or returns a stream object you iterate to consume the value's pieces as they arrive — recursively, for any depth of nesting.
 
 ```python
-from toki import JsonStreamParser
+from toki import streaming_parse_json, JsonDictStream, JsonStrStream, JsonArrStream
 
-p = JsonStreamParser()
-for ev in p.feed('{"city": "Par'):
-    print(ev)   # ('arg_start', 'city'), ('arg_chunk', 'P'), ('arg_chunk', 'a'), ('arg_chunk', 'r')
-for ev in p.feed('is", "n": 42}'):
-    print(ev)   # ('arg_chunk', 'i'), ('arg_chunk', 's'), ('arg_end', 'Paris'),
-                # ('arg_start', 'n'), ('arg_chunk', '4'), ('arg_chunk', '2'),
-                # ('arg_end', 42), ('done', {'city': 'Paris', 'n': 42})
+def chunks():
+    yield '{"city": "Par'
+    yield 'is", "items": ["a"'
+    yield ', "b"], "n": 42}'
+
+value = streaming_parse_json(chunks())
+assert isinstance(value, JsonDictStream)
+for key, sub in value.items():
+    if isinstance(sub, JsonStrStream):
+        print(f"{key}=", end="")
+        for piece in sub: print(piece, end="", flush=True)
+        print()
+    elif isinstance(sub, JsonArrStream):
+        print(f"{key}={[item for item in sub]}")
+    else:
+        print(f"{key}={sub}")        # primitive (int/float/bool/None)
 ```
 
-Strings stream as decoded characters; numbers / booleans / null / arrays / objects stream as raw JSON-text fragments. The parsed Python value of each top-level key is delivered in `arg_end`, and the full parsed object in `done`. Strict mode only: malformed input raises `ValueError`.
+Each stream object also has a `.value` property that returns the fully-parsed Python value, auto-draining any pieces you haven't consumed yet (the stream then locks against further iteration). Streams parents auto-drain unfinished children when advanced, so you can break early without ceremony.
+
+For LLM responses where the model wraps JSON in commentary or markdown fences, `trash_skipper` cleans the stream before parsing:
+
+```python
+from toki import trash_skipper, streaming_parse_json
+
+response = '''Sure, here's your data:
+```json
+{"key": "value", "n": 42}
+```
+Let me know if you need anything else.'''
+
+clean = trash_skipper(iter([response]), look_for=(dict,))
+result = streaming_parse_json(clean)
+print(result.value)   # {'key': 'value', 'n': 42}
+```
+
+`trash_skipper` walks the source until it finds a valid JSON value of one of the requested types (`dict`, `list`, `str`, `int`, `float`, `bool`, `None`), yields exactly that value's text, and stops — leading and trailing noise are both stripped. It validates literal start positions (e.g. `t` must actually begin `true`, not `truthfully`) so it's safe to point at arbitrary natural-language streams.
+
+Inside a tool call, `TokiToolCallStream.expect_arg(name)` / `items()` is usually what you want instead — see [Streaming Tools](#streaming-tools). And note the two compose: a `TokiArgStream` for a non-string argument yields raw JSON text chunks, so for a big nested arg you can pipe it straight into `streaming_parse_json` for a recursive view:
+
+```python
+items_arg = tool_call.expect_arg('items')      # large nested-array argument
+items = streaming_parse_json(items_arg)         # JsonArrStream over the same data
+for item in items:
+    ...
+```
 
 ### Building CLIs with `easyrepl`
 
@@ -533,7 +565,7 @@ The base class handles everything else:
 
 - Schema unwrapping (`ToolSchema` / `StreamingToolSchema` / raw dict → wire format).
 - Building typed blocking responses (`TokiThoughtResponse`, `TokiToolsResponse[T]`, `TokiToolsThoughtResponse[T]`).
-- Driving `JsonStreamParser` over each tool call's `arguments_fragment` deltas to produce live `TokiToolCallStream`s.
+- Driving an internal envelope parser over each tool call's `arguments_fragment` deltas to produce live `TokiToolCallStream`s.
 - All 16 typing overloads on the public `complete()` entry point.
 
 Reference implementations:
