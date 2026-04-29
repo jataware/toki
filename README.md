@@ -489,7 +489,7 @@ key = get_openrouter_api_key()  # raises ValueError if env var unset
 Toki ships a general-purpose pull-based streaming JSON parser. Hand `streaming_parse_json` an iterable of string chunks; it identifies the next JSON value and either returns the parsed primitive directly or returns a stream object you iterate to consume the value's pieces as they arrive — recursively, for any depth of nesting.
 
 ```python
-from toki import streaming_parse_json, JsonDictStream, JsonStrStream, JsonArrStream
+from toki.helpers.jsonstream import streaming_parse_json, JsonDictStream, JsonStrStream, JsonArrStream
 
 def chunks():
     yield '{"city": "Par'
@@ -514,7 +514,7 @@ Each stream object also has a `.value` property that returns the fully-parsed Py
 For LLM responses where the model wraps JSON in commentary or markdown fences, `trash_skipper` cleans the stream before parsing:
 
 ```python
-from toki import trash_skipper, streaming_parse_json
+from toki.helpers.jsonstream import trash_skipper, streaming_parse_json
 
 response = '''Sure, here's your data:
 ```json
@@ -582,7 +582,7 @@ Function + context version:
 ```python
 from enum import Enum, auto
 from dataclasses import dataclass
-from toki import StateMachine, END_STATE
+from toki.helpers.statemachine import StateMachine, END_STATE
 
 class State(Enum):
     A = auto()
@@ -613,7 +613,7 @@ for s in sm.run(State.A, context=Context("Alice")):
 Class-based version:
 ```python
 from enum import Enum, auto
-from toki import ClassStateMachine, on, END_STATE
+from toki.helpers.statemachine import ClassStateMachine, on, END_STATE
 
 class State(Enum):
     A = auto(); B = auto(); C = auto()

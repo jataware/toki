@@ -162,7 +162,7 @@ class ClassStateMachine(Generic[E, C]):
 if __name__ == "__main__":
     from enum import Enum, auto
     from dataclasses import dataclass
-    from toki.statemachine import on, StateMachine, EndState, END_STATE
+    from toki.helpers.statemachine import on, StateMachine, EndState, END_STATE
 
     class State(Enum):
         A = auto()
@@ -197,7 +197,7 @@ if __name__ == "__main__":
 ######################### example usage of class state machine #########################
 if __name__ == "__main__":
     from enum import Enum, auto
-    from toki.statemachine import on, ClassStateMachine, EndState, END_STATE
+    from toki.helpers.statemachine import on, ClassStateMachine, EndState, END_STATE
     
     class State(Enum):
         A = auto()

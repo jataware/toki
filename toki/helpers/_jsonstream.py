@@ -12,7 +12,7 @@ streaming tool call). Yields tagged events as input is fed via `feed()`:
   - the full parsed object is delivered in `done`
 
 Not part of the public API. The general-purpose public streaming JSON parser
-lives in `toki/jsonstream.py`.
+lives in `toki/helpers/jsonstream.py`.
 
 Strict mode only: any malformed input raises `ValueError` at the offending feed.
 """

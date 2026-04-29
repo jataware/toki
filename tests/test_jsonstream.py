@@ -1,4 +1,4 @@
-"""Tests for the streaming JSON parser (`toki.jsonstream`).
+"""Tests for the streaming JSON parser (`toki.helpers.jsonstream`).
 
 Each test exercises one design point: primitive parsing, string streaming,
 recursive nesting, `.value` semantics, auto-drain behavior, error reporting,
@@ -7,7 +7,7 @@ and the `trash_skipper` extraction wrapper.
 
 import pytest
 
-from toki.jsonstream import (
+from toki.helpers.jsonstream import (
     JsonArrStream,
     JsonDictStream,
     JsonStrStream,

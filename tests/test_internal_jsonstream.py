@@ -1,4 +1,4 @@
-"""Tests for the internal tool-call envelope parser (`toki._jsonstream`).
+"""Tests for the internal tool-call envelope parser (`toki.helpers._jsonstream`).
 
 This parser is the push-fed state machine that backs `TokiToolCallStream` /
 `TokiArgStream`. Tests cover:
@@ -19,8 +19,8 @@ The public, recursive streaming parser is tested separately in
 
 import pytest
 
-from toki._jsonstream import JsonStreamParser
-from toki.jsonstream import (
+from toki.helpers._jsonstream import JsonStreamParser
+from toki.helpers.jsonstream import (
     JsonArrStream,
     JsonDictStream,
     streaming_parse_json,
