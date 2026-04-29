@@ -5,6 +5,12 @@ on:
     branches: [ master ]
     paths:
       - pyproject.toml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Publish current master to PyPI regardless of version-change detection"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,7 +24,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          # Need at least the previous commit to compare against
           fetch-depth: 2
 
       - name: Set up uv
@@ -29,21 +34,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          OLD="${{ github.event.before }}"
-          CUR="${{ github.sha }}"
 
-          # If there's nothing to compare to, skip publishing
-          if [ -z "${OLD}" ] || [ "${OLD}" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${OLD}^{commit}" 2>/dev/null; then
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "Manual force publish requested."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CUR="$(git rev-parse HEAD)"
+          OLD="$(git rev-parse HEAD^ 2>/dev/null || true)"
+
+          if [ -z "${OLD}" ] || ! git cat-file -e "${OLD}^{commit}" 2>/dev/null; then
             echo "No previous commit to compare to; skipping publish."
             echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Version at current commit (HEAD)
           NEW_VERSION=$(uv version | awk '{print $2}')
           echo "Current version (HEAD): ${NEW_VERSION}"
 
-          # Hop to previous commit, get version, then hop back
           git -c advice.detachedHead=false checkout --force "${OLD}"
           OLD_VERSION=$(uv version | awk '{print $2}' || true)
           echo "Previous version: ${OLD_VERSION}"
