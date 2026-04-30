@@ -513,7 +513,7 @@ Each stream object also has a `.value` property that returns the fully-parsed Py
 
 For LLM responses where the model wraps JSON in commentary or markdown fences, `trash_skipper` cleans the stream before parsing:
 
-```python
+````python
 from toki.helpers.jsonstream import trash_skipper, streaming_parse_json
 
 response = '''Sure, here's your data:
@@ -522,10 +522,10 @@ response = '''Sure, here's your data:
 ```
 Let me know if you need anything else.'''
 
-clean = trash_skipper(iter([response]), look_for=(dict,))
+clean = trash_skipper(iter([response]), look_for=dict)
 result = streaming_parse_json(clean)
 print(result.value)   # {'key': 'value', 'n': 42}
-```
+````
 
 `trash_skipper` walks the source until it finds a valid JSON value of one of the requested types (`dict`, `list`, `str`, `int`, `float`, `bool`, `None`), yields exactly that value's text, and stops — leading and trailing noise are both stripped. It validates literal start positions (e.g. `t` must actually begin `true`, not `truthfully`) so it's safe to point at arbitrary natural-language streams.
 
