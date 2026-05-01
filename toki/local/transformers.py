@@ -1,10 +1,11 @@
+import asyncio
 import json
 from threading import Thread
-from typing import Iterator, Literal
+from typing import AsyncIterator, Iterator, Literal
 from uuid import uuid4
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, TextStreamer
 
 from ..helpers._jsonstream import JsonStreamParser
 from ..model import (
@@ -203,6 +204,27 @@ class _ToolEnvelopeSplitter:
         # buf is a prefix of target; wait for more
 
 
+class _AsyncQueueStreamer(TextStreamer):
+    """Bridge from the (sync) generation worker thread to an asyncio.Queue.
+
+    Subclasses `TextStreamer` so it plugs straight into `model.generate(streamer=...)`,
+    but redirects each finalized chunk into an `asyncio.Queue` on the calling
+    event loop. A `None` sentinel is enqueued when generation ends, signalling
+    the consumer to stop.
+    """
+
+    def __init__(self, tokenizer, loop: asyncio.AbstractEventLoop, queue: 'asyncio.Queue[str | None]', **decode_kwargs):
+        super().__init__(tokenizer, **decode_kwargs)
+        self._loop = loop
+        self._queue = queue
+
+    def on_finalized_text(self, text: str, stream_end: bool = False) -> None:
+        if text:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, text)
+        if stream_end:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
+
+
 class LocalModel(BaseModel):
     """Local `transformers`-backed model with the same interface as other toki backends."""
 
@@ -343,6 +365,116 @@ class LocalModel(BaseModel):
 
         full_completion = "".join(completion_text_chunks)
         # also account for stripped thinking in the usage tally so callers see total work done
+        usage = self._build_usage(prompt_tokens=inputs["input_ids"].shape[-1], completion_text=full_completion)
+        yield _RawUsage(usage=usage)
+
+    async def _raw_blocking_async(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> _RawTurn:
+        # `model.generate(stream=False)` is one big blocking GPU call with no incremental
+        # output; the right primitive is to_thread (frees the event loop) rather than a
+        # bespoke async re-implementation.
+        return await asyncio.to_thread(
+            self._raw_blocking,
+            messages,
+            tools,
+            capture_thinking=capture_thinking,
+            **kwargs,
+        )
+
+    async def _raw_streaming_async(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> AsyncIterator[_RawChunk]:
+        prompt = self._build_prompt(messages, tools=tools)
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        streamer = _AsyncQueueStreamer(self.tokenizer, loop, queue, skip_prompt=True, skip_special_tokens=True)
+        generation_kwargs = self._build_generate_kwargs(
+            input_token_count=inputs["input_ids"].shape[-1],
+            **kwargs,
+        )
+        errors: list[BaseException] = []
+
+        def run_generation() -> None:
+            try:
+                with torch.no_grad():
+                    self._model.generate(
+                        **inputs,
+                        **generation_kwargs,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        streamer=streamer,
+                    )
+            except BaseException as exc:
+                errors.append(exc)
+                # wake the consumer if generation died before stream_end
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        worker = Thread(target=run_generation, daemon=True)
+        worker.start()
+
+        thinking_splitter = _ThinkingSplitter()
+        envelope_splitter = _ToolEnvelopeSplitter()
+        current_tool_index: int | None = None
+        completion_text_chunks: list[str] = []
+
+        def drive_envelope(text: str) -> Iterator[_RawChunk]:
+            nonlocal current_tool_index
+            for ev in envelope_splitter.feed(text):
+                kind = ev[0]
+                if kind == 'content':
+                    if ev[1]:
+                        yield _RawContentChunk(text=ev[1])
+                elif kind == 'tool_first':
+                    _, tid, tname, tindex = ev
+                    current_tool_index = tindex
+                    yield _RawToolCallChunk(index=tindex, id=tid, name=tname)
+                elif kind == 'tool_args':
+                    assert current_tool_index is not None
+                    yield _RawToolCallChunk(index=current_tool_index, arguments_fragment=ev[1])
+                elif kind == 'tool_close':
+                    current_tool_index = None
+
+        try:
+            while True:
+                text = await queue.get()
+                if text is None:
+                    break
+                completion_text_chunks.append(text)
+                for kind, s in thinking_splitter.feed(text):
+                    if kind == 'thought':
+                        if capture_thinking and s:
+                            yield _RawThoughtChunk(text=s)
+                    else:
+                        for ev in drive_envelope(s):
+                            yield ev
+            for kind, s in thinking_splitter.flush():
+                if kind == 'thought':
+                    if capture_thinking and s:
+                        yield _RawThoughtChunk(text=s)
+                else:
+                    for ev in drive_envelope(s):
+                        yield ev
+            for ev in envelope_splitter.flush():
+                if ev[0] == 'content' and ev[1]:
+                    yield _RawContentChunk(text=ev[1])
+        finally:
+            # generation has signaled stream_end (or an error) — join is near-instant
+            await asyncio.to_thread(worker.join)
+            if errors:
+                raise errors[0]
+
+        full_completion = "".join(completion_text_chunks)
         usage = self._build_usage(prompt_tokens=inputs["input_ids"].shape[-1], completion_text=full_completion)
         yield _RawUsage(usage=usage)
 

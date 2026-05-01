@@ -1,6 +1,6 @@
 [project]
 name = "toki"
-version = "1.1.1"
+version = "1.2.0"
 description = "Minimal universal LLM interface API"
 readme = "README.md"
 authors = [
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openrouter = ["requests>=2.32.5"]
+openrouter = ["requests>=2.32.5", "httpx>=0.27"]
 local = ["torch>=2.0", "transformers>=4.40"]
 litellm = ["litellm>=1.52"]
 openai = ["toki[litellm]"]
@@ -38,12 +38,14 @@ dev = [
     "huggingface-hub>=0.20",
     "tqdm>=4",
     "pytest>=8",
+    "pytest-asyncio>=0.23",
     "pytest-html>=4",
     "beautifulsoup4>=4",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 # `--html` is set dynamically by `tests/conftest.py:pytest_configure` to a
 # timestamped file under `tests/results/`. We still want self-contained reports
 # so they're a single portable file.

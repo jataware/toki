@@ -437,6 +437,60 @@ Mixing static and streaming tools in the same `Agent` is fine: static tools yiel
 
 **Backend nuance: `OllamaModel`.** Ollama emits each tool call as a fully-formed object (id+name+arguments together) rather than as per-character argument deltas. `StreamingToolSchema` still works for API symmetry, but iterating a `TokiArgStream` from an Ollama call yields the entire arg value in one chunk. The first time you pass a `StreamingToolSchema` to an `OllamaModel` in `stream=True` mode, toki emits a one-shot `UserWarning`.
 
+## Async usage
+
+Every `BaseModel` and `Agent` mirrors its sync surface with `acomplete()` / `aexecute()`. Same arguments, same chunk semantics, same overloads — porting code is `complete -> acomplete` plus `await` / `async for`. All bundled backends (`OpenRouterModel`, `OpenAIModel`, `AnthropicModel`, `GoogleModel`, `OllamaModel`, `LocalModel`) implement async natively (litellm's `acompletion`, `httpx.AsyncClient`, `ollama.AsyncClient`, and an `asyncio.Queue` bridge for the local `transformers` worker thread); none of them are sync-wrapped-in-a-thread.
+
+**Blocking** — `acomplete()` / `aexecute()` returns a coroutine:
+
+```python
+text = await model.acomplete(messages)
+result = await agent.aexecute()
+```
+
+**Streaming** — they return an async generator (no need to `await` first):
+
+```python
+async for chunk in model.acomplete(messages, stream=True, capture_thinking=True):
+    match chunk:
+        case str():                     ...
+        case TokiThinking():            ...
+        case TokiToolCall():            ...
+        case AsyncTokiToolCallStream(): ...
+```
+
+The streaming-tool wrappers swap to async siblings: `AsyncTokiToolCallStream` replaces `TokiToolCallStream`, `AsyncTokiArgStream` replaces `TokiArgStream`. Iteration switches to `async for`, and `value` / `arguments` become coroutines:
+
+```python
+async def handle_propose_patch(stream: AsyncTokiToolCallStream) -> None:
+    target = "".join([piece async for piece in stream.expect_arg("target")])
+    print(f"--- target ---\n{target}\n--- replacement ---")
+    async for chunk in stream.expect_arg("replacement"):
+        print(chunk, end="", flush=True)
+    print()
+
+async for chunk in agent.aexecute(stream=True):
+    if isinstance(chunk, AsyncTokiToolCallStream):
+        await handle_propose_patch(chunk)
+    else:
+        print(chunk, end="", flush=True)
+```
+
+Equivalents at a glance:
+
+| Sync                    | Async                                  |
+|-------------------------|----------------------------------------|
+| `model.complete(...)`   | `await model.acomplete(...)`           |
+| `agent.execute(...)`    | `await agent.aexecute(...)`            |
+| `for x in ...`          | `async for x in ...`                   |
+| `arg_stream.value`      | `await arg_stream.value()`             |
+| `tool_stream.arguments` | `await tool_stream.arguments()`        |
+| `for n, a in tc.items()`| `async for n, a in tc.items()`         |
+| `TokiToolCallStream`    | `AsyncTokiToolCallStream`              |
+| `TokiArgStream`         | `AsyncTokiArgStream`                   |
+
+Blocking `acomplete(stream=False)` with a `StreamingToolSchema` tool returns a pre-drained `AsyncTokiToolCallStream` — same API symmetry as the sync side.
+
 ## Return types of `complete()` and `execute()`
 
 `BaseModel.complete()` and `Agent.execute()` are heavily overloaded so the static return type matches what's actually possible given the flags you passed. The three knobs that matter are `stream`, `capture_thinking`, and the *shape* of `tools=` (no tools, all `ToolSchema`, all `StreamingToolSchema`, or mixed).

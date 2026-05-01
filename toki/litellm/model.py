@@ -1,6 +1,6 @@
 import json
 import warnings
-from typing import Any, Iterator, Literal
+from typing import Any, AsyncIterator, Iterator, Literal
 
 import litellm
 
@@ -105,14 +105,7 @@ class _LiteLLMModel(BaseModel):
             stream=False,
             **call_kwargs,
         )
-        choice = response.choices[0]
-        msg = choice.message
-        content = _attr(msg, "content", "") or ""
-        raw_tcs = _attr(msg, "tool_calls", None) or []
-        tool_calls = [TokiToolCall.from_dict(_normalize_tool_call(tc)) for tc in raw_tcs]
-        thought = (_attr(msg, "reasoning_content", "") or "") if capture_thinking else ""
-        usage = _normalize_usage(_attr(response, "usage", None))
-        return _RawTurn(content=content, tool_calls=tool_calls, thought=thought, usage=usage)
+        return _build_turn_from_response(response, capture_thinking=capture_thinking)
 
     def _raw_streaming(
         self,
@@ -131,24 +124,80 @@ class _LiteLLMModel(BaseModel):
             **call_kwargs,
         )
         for chunk in stream:
-            choices = _attr(chunk, "choices", None) or []
-            if choices:
-                delta = _attr(choices[0], "delta", None)
-                if delta is not None:
-                    reasoning = _attr(delta, "reasoning_content", None)
-                    if reasoning:
-                        yield _RawThoughtChunk(text=reasoning)
-                    content = _attr(delta, "content", None)
-                    if content:
-                        yield _RawContentChunk(text=content)
-                    tool_deltas = _attr(delta, "tool_calls", None) or []
-                    for tc in tool_deltas:
-                        yield _tool_call_chunk_from_delta(tc)
-            usage = _attr(chunk, "usage", None)
-            if usage is not None:
-                normalized = _normalize_usage(usage)
-                if normalized is not None:
-                    yield _RawUsage(usage=normalized)
+            yield from _translate_streaming_chunk(chunk)
+
+    async def _raw_blocking_async(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> _RawTurn:
+        call_kwargs = self._build_kwargs(tools, capture_thinking, kwargs)
+        response = await litellm.acompletion(
+            model=self._wire_model,
+            api_key=self.api_key,
+            messages=[_msg_to_wire(m) for m in messages],
+            stream=False,
+            **call_kwargs,
+        )
+        return _build_turn_from_response(response, capture_thinking=capture_thinking)
+
+    async def _raw_streaming_async(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> AsyncIterator[_RawChunk]:
+        call_kwargs = self._build_kwargs(tools, capture_thinking, kwargs)
+        stream = await litellm.acompletion(
+            model=self._wire_model,
+            api_key=self.api_key,
+            messages=[_msg_to_wire(m) for m in messages],
+            stream=True,
+            **call_kwargs,
+        )
+        async for chunk in stream:
+            for raw in _translate_streaming_chunk(chunk):
+                yield raw
+
+
+def _build_turn_from_response(response: Any, *, capture_thinking: bool) -> _RawTurn:
+    """Translate a non-streaming litellm completion response into a `_RawTurn`."""
+    choice = response.choices[0]
+    msg = choice.message
+    content = _attr(msg, "content", "") or ""
+    raw_tcs = _attr(msg, "tool_calls", None) or []
+    tool_calls = [TokiToolCall.from_dict(_normalize_tool_call(tc)) for tc in raw_tcs]
+    thought = (_attr(msg, "reasoning_content", "") or "") if capture_thinking else ""
+    usage = _normalize_usage(_attr(response, "usage", None))
+    return _RawTurn(content=content, tool_calls=tool_calls, thought=thought, usage=usage)
+
+
+def _translate_streaming_chunk(chunk: Any) -> Iterator[_RawChunk]:
+    """Translate one streaming-completion chunk into zero-or-more `_RawChunk`s.
+    Shared between the sync and async streaming paths."""
+    choices = _attr(chunk, "choices", None) or []
+    if choices:
+        delta = _attr(choices[0], "delta", None)
+        if delta is not None:
+            reasoning = _attr(delta, "reasoning_content", None)
+            if reasoning:
+                yield _RawThoughtChunk(text=reasoning)
+            content = _attr(delta, "content", None)
+            if content:
+                yield _RawContentChunk(text=content)
+            tool_deltas = _attr(delta, "tool_calls", None) or []
+            for tc in tool_deltas:
+                yield _tool_call_chunk_from_delta(tc)
+    usage = _attr(chunk, "usage", None)
+    if usage is not None:
+        normalized = _normalize_usage(usage)
+        if normalized is not None:
+            yield _RawUsage(usage=normalized)
 
 
 def _normalize_tool_call(tc: Any) -> dict:

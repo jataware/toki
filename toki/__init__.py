@@ -2,6 +2,8 @@ import importlib
 
 from .agent import Agent, WithMixedTools, WithoutTools, WithStaticTools, WithStreamingTools
 from .model import (
+    AsyncTokiArgStream,
+    AsyncTokiToolCallStream,
     BaseModel,
     Role,
     StreamingToolSchema,
@@ -66,6 +68,8 @@ def __dir__() -> list[str]:
 
 __all__ = [
     'Agent',
+    'AsyncTokiArgStream',
+    'AsyncTokiToolCallStream',
     'BaseModel',
     'Role',
     'StreamingToolSchema',
