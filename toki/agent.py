@@ -1,6 +1,7 @@
-from typing import Generator, Generic, Literal, Sequence, TypeVar, cast, overload
+from typing import Any, AsyncGenerator, Coroutine, Generator, Generic, Literal, Sequence, TypeVar, cast, overload
 
 from .model import (
+    AsyncTokiToolCallStream,
     BaseModel,
     Role,
     StreamingToolSchema,
@@ -31,7 +32,7 @@ class Agent(Generic[ToolsShape]):
     """A model paired with message-history tracking. The tools-shape type parameter
     tracks whether the agent has no tools (`WithoutTools`), static-only tools
     (`WithStaticTools`), streaming-only tools (`WithStreamingTools`), or a mix
-    (`WithMixedTools`); `execute()`'s return types specialize accordingly.
+    (`WithMixedTools`); `execute()` and `aexecute()`'s return types specialize accordingly.
     """
 
     @overload
@@ -171,11 +172,110 @@ class Agent(Generic[ToolsShape]):
         else:
             self.add_assistant_message(content)
 
+    # ----- aexecute: 16 overloads -----------------------------------------------
+
+    # blocking, capture_thinking=False
+    @overload
+    def aexecute(self: 'Agent[WithoutTools]', *, stream: Literal[False] = False, capture_thinking: Literal[False] = False) -> Coroutine[Any, Any, str]: ...
+    @overload
+    def aexecute(self: 'Agent[WithStaticTools]', *, stream: Literal[False] = False, capture_thinking: Literal[False] = False) -> Coroutine[Any, Any, str | TokiToolsResponse[TokiToolCall]]: ...
+    @overload
+    def aexecute(self: 'Agent[WithStreamingTools]', *, stream: Literal[False] = False, capture_thinking: Literal[False] = False) -> Coroutine[Any, Any, str | TokiToolsResponse[AsyncTokiToolCallStream]]: ...
+    @overload
+    def aexecute(self: 'Agent[WithMixedTools]', *, stream: Literal[False] = False, capture_thinking: Literal[False] = False) -> Coroutine[Any, Any, str | TokiToolsResponse[TokiToolCall | AsyncTokiToolCallStream]]: ...
+    # blocking, capture_thinking=True
+    @overload
+    def aexecute(self: 'Agent[WithoutTools]', *, stream: Literal[False] = False, capture_thinking: Literal[True]) -> Coroutine[Any, Any, TokiThoughtResponse]: ...
+    @overload
+    def aexecute(self: 'Agent[WithStaticTools]', *, stream: Literal[False] = False, capture_thinking: Literal[True]) -> Coroutine[Any, Any, TokiThoughtResponse | TokiToolsThoughtResponse[TokiToolCall]]: ...
+    @overload
+    def aexecute(self: 'Agent[WithStreamingTools]', *, stream: Literal[False] = False, capture_thinking: Literal[True]) -> Coroutine[Any, Any, TokiThoughtResponse | TokiToolsThoughtResponse[AsyncTokiToolCallStream]]: ...
+    @overload
+    def aexecute(self: 'Agent[WithMixedTools]', *, stream: Literal[False] = False, capture_thinking: Literal[True]) -> Coroutine[Any, Any, TokiThoughtResponse | TokiToolsThoughtResponse[TokiToolCall | AsyncTokiToolCallStream]]: ...
+    # streaming, capture_thinking=False
+    @overload
+    def aexecute(self: 'Agent[WithoutTools]', *, stream: Literal[True], capture_thinking: Literal[False] = False) -> AsyncGenerator[str, None]: ...
+    @overload
+    def aexecute(self: 'Agent[WithStaticTools]', *, stream: Literal[True], capture_thinking: Literal[False] = False) -> AsyncGenerator[str | TokiToolCall, None]: ...
+    @overload
+    def aexecute(self: 'Agent[WithStreamingTools]', *, stream: Literal[True], capture_thinking: Literal[False] = False) -> AsyncGenerator[str | AsyncTokiToolCallStream, None]: ...
+    @overload
+    def aexecute(self: 'Agent[WithMixedTools]', *, stream: Literal[True], capture_thinking: Literal[False] = False) -> AsyncGenerator[str | TokiToolCall | AsyncTokiToolCallStream, None]: ...
+    # streaming, capture_thinking=True
+    @overload
+    def aexecute(self: 'Agent[WithoutTools]', *, stream: Literal[True], capture_thinking: Literal[True]) -> AsyncGenerator[str | TokiThinking, None]: ...
+    @overload
+    def aexecute(self: 'Agent[WithStaticTools]', *, stream: Literal[True], capture_thinking: Literal[True]) -> AsyncGenerator[str | TokiThinking | TokiToolCall, None]: ...
+    @overload
+    def aexecute(self: 'Agent[WithStreamingTools]', *, stream: Literal[True], capture_thinking: Literal[True]) -> AsyncGenerator[str | TokiThinking | AsyncTokiToolCallStream, None]: ...
+    @overload
+    def aexecute(self: 'Agent[WithMixedTools]', *, stream: Literal[True], capture_thinking: Literal[True]) -> AsyncGenerator[str | TokiThinking | TokiToolCall | AsyncTokiToolCallStream, None]: ...
+
+    def aexecute(self, *, stream: bool = False, capture_thinking: bool = False):
+        if stream:
+            return self._streaming_aexecute(capture_thinking=capture_thinking)
+        return self._blocking_aexecute(capture_thinking=capture_thinking)
+
+    async def _blocking_aexecute(self, *, capture_thinking: bool):
+        if self.tools is None:
+            result = await self.model.acomplete(self.messages, stream=False, capture_thinking=capture_thinking)
+        else:
+            result = await self.model.acomplete(self.messages, stream=False, tools=self.tools, capture_thinking=capture_thinking)
+
+        if isinstance(result, str):
+            self.add_assistant_message(result)
+            return result
+        if isinstance(result, TokiThoughtResponse):
+            self.add_assistant_message(result.content)
+            return result
+        materialized = [await _amaterialize_tool_call(tc) for tc in result.tool_calls]
+        self_with_tools = cast('Agent[WithStaticTools]', self)
+        self_with_tools.add_assistant_tool_calls(result.content, materialized)
+        return result
+
+    async def _streaming_aexecute(self, *, capture_thinking: bool):
+        content_chunks: list[str] = []
+        tool_calls: list[TokiToolCall] = []
+        streams: list[AsyncTokiToolCallStream] = []
+
+        if self.tools is None:
+            source = self.model.acomplete(self.messages, stream=True, capture_thinking=capture_thinking)
+        else:
+            source = self.model.acomplete(self.messages, stream=True, tools=self.tools, capture_thinking=capture_thinking)
+
+        async for chunk in source:
+            if isinstance(chunk, str):
+                content_chunks.append(chunk)
+            elif isinstance(chunk, TokiToolCall):
+                tool_calls.append(chunk)
+            elif isinstance(chunk, AsyncTokiToolCallStream):
+                streams.append(chunk)
+            # TokiThinking is ephemeral; not added to history
+            yield chunk
+
+        for s in streams:
+            tool_calls.append(await _amaterialize_tool_call(s))
+
+        content = ''.join(content_chunks)
+        if tool_calls:
+            self_with_tools = cast('Agent[WithStaticTools]', self)
+            self_with_tools.add_assistant_tool_calls(content, tool_calls)
+        else:
+            self.add_assistant_message(content)
+
 
 def _materialize_tool_call(tc: TokiToolCall | TokiToolCallStream) -> TokiToolCall:
-    """Convert a tool-call entry from a response into a concrete `TokiToolCall`. For
-    a `TokiToolCallStream` this drains the stream (idempotent) and reads the parsed
-    arguments dict."""
+    """Convert a tool-call entry from a sync response into a concrete `TokiToolCall`.
+    For a `TokiToolCallStream` this drains the stream (idempotent) and reads the
+    parsed arguments dict."""
     if isinstance(tc, TokiToolCall):
         return tc
     return TokiToolCall(id=tc.id, function=TokiToolFunction(name=tc.name, arguments=tc.arguments))
+
+
+async def _amaterialize_tool_call(tc: TokiToolCall | AsyncTokiToolCallStream) -> TokiToolCall:
+    """Async sibling of `_materialize_tool_call` for entries from `aexecute()`."""
+    if isinstance(tc, TokiToolCall):
+        return tc
+    args = await tc.arguments()
+    return TokiToolCall(id=tc.id, function=TokiToolFunction(name=tc.name, arguments=args))

@@ -1,7 +1,8 @@
 import json
 import warnings
-from typing import Any, Iterator, TypedDict, cast
+from typing import Any, AsyncIterator, Iterator, TypedDict, cast
 
+import httpx
 import requests
 from typing_extensions import NotRequired
 
@@ -62,6 +63,9 @@ class OpenRouterResponseError(TypedDict):
     error: Any
 
 
+_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
 def _tool_call_to_wire(tc: TokiToolCall) -> dict:
     # OpenRouter / OpenAI wire format wants `arguments` as a JSON-encoded string
     return {
@@ -118,6 +122,12 @@ class OpenRouterModel(BaseModel):
             payload["stream"] = True
         return payload
 
+    def _headers(self, *, stream: bool) -> dict:
+        h = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        if stream:
+            h["Accept"] = "text/event-stream"
+        return h
+
     def _raw_blocking(
         self,
         messages: list[TokiMessage],
@@ -127,24 +137,8 @@ class OpenRouterModel(BaseModel):
         **kwargs,
     ) -> _RawTurn:
         payload = self._build_payload(messages, tools, capture_thinking, stream=False, kwargs=kwargs)
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json=payload,
-        )
-        data = cast(OpenRouterResponse | OpenRouterResponseError, response.json())
-        if 'error' in data:
-            raise ValueError(f"Error from OpenRouter: {data}")
-        try:
-            usage = cast(TokiUsageMetadata, data['usage'])
-            message = data['choices'][0]['message']
-            content = message.get('content', '') or ''
-            raw_tcs = message.get('tool_calls') or []
-            tool_calls = [TokiToolCall.from_dict(tc) for tc in raw_tcs]
-            thought = _extract_reasoning_text(message) if capture_thinking else ''
-            return _RawTurn(content=content, tool_calls=tool_calls, thought=thought, usage=usage)
-        except KeyError as e:
-            raise ValueError(f"Unexpected response format: '{data}'. {e}") from e
+        response = requests.post(url=_API_URL, headers=self._headers(stream=False), json=payload)
+        return _turn_from_blocking_json(response.json(), capture_thinking=capture_thinking)
 
     def _raw_streaming(
         self,
@@ -154,15 +148,9 @@ class OpenRouterModel(BaseModel):
         capture_thinking: bool,
         **kwargs,
     ) -> Iterator[_RawChunk]:
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
         payload = self._build_payload(messages, tools, capture_thinking, stream=True, kwargs=kwargs)
 
-        with requests.post(url, headers=headers, json=payload, stream=True, timeout=(10, 60)) as r:
+        with requests.post(_API_URL, headers=self._headers(stream=True), json=payload, stream=True, timeout=(10, 60)) as r:
             r.raise_for_status()
             r.encoding = "utf-8"
 
@@ -181,37 +169,102 @@ class OpenRouterModel(BaseModel):
                         continue
                     data = "\n".join(buf)
                     buf.clear()
-
                     if data == "[DONE]":
                         return
-
-                    try:
-                        obj = cast(OpenRouterResponseDelta | OpenRouterResponseError, json.loads(data))
-                    except json.JSONDecodeError:
-                        continue
-                    if 'error' in obj:
-                        raise ValueError(f"Error from OpenRouter: {obj}")
-                    try:
-                        delta = obj["choices"][0]["delta"]
-                    except (KeyError, IndexError):
-                        delta = None
-
-                    if delta is not None:
-                        reasoning_text = _extract_reasoning_text(delta)
-                        if reasoning_text:
-                            yield _RawThoughtChunk(text=reasoning_text)
-
-                        content = delta.get("content")
-                        if content:
-                            yield _RawContentChunk(text=content)
-
-                        for tc_delta in delta.get("tool_calls") or []:
-                            yield _tool_call_chunk_from_delta(tc_delta)
-
-                    if "usage" in obj:
-                        yield _RawUsage(usage=cast(TokiUsageMetadata, obj["usage"]))  # type: ignore[index]
-                    continue
+                    yield from _parse_sse_event(data)
                 # ignore other SSE field lines (event:, id:, comments)
+
+    async def _raw_blocking_async(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> _RawTurn:
+        payload = self._build_payload(messages, tools, capture_thinking, stream=False, kwargs=kwargs)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            response = await client.post(_API_URL, headers=self._headers(stream=False), json=payload)
+        return _turn_from_blocking_json(response.json(), capture_thinking=capture_thinking)
+
+    async def _raw_streaming_async(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> AsyncIterator[_RawChunk]:
+        payload = self._build_payload(messages, tools, capture_thinking, stream=True, kwargs=kwargs)
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            async with client.stream("POST", _API_URL, headers=self._headers(stream=True), json=payload) as r:
+                r.raise_for_status()
+                buf: list[str] = []
+                async for line in r.aiter_lines():
+                    if line.startswith("data:"):
+                        buf.append(line[5:].lstrip())
+                        continue
+                    if line == "":
+                        if not buf:
+                            continue
+                        data = "\n".join(buf)
+                        buf.clear()
+                        if data == "[DONE]":
+                            return
+                        for raw in _parse_sse_event(data):
+                            yield raw
+
+
+def _turn_from_blocking_json(data: Any, *, capture_thinking: bool) -> _RawTurn:
+    """Translate a non-streaming OpenRouter response JSON dict into a `_RawTurn`."""
+    data = cast(OpenRouterResponse | OpenRouterResponseError, data)
+    if 'error' in data:
+        raise ValueError(f"Error from OpenRouter: {data}")
+    try:
+        usage = cast(TokiUsageMetadata, data['usage'])
+        message = data['choices'][0]['message']
+        content = message.get('content', '') or ''
+        raw_tcs = message.get('tool_calls') or []
+        tool_calls = [TokiToolCall.from_dict(tc) for tc in raw_tcs]
+        thought = _extract_reasoning_text(message) if capture_thinking else ''
+        return _RawTurn(content=content, tool_calls=tool_calls, thought=thought, usage=usage)
+    except KeyError as e:
+        raise ValueError(f"Unexpected response format: '{data}'. {e}") from e
+
+
+def _parse_sse_event(data: str) -> Iterator[_RawChunk]:
+    """Parse a single complete SSE event's data payload into zero-or-more `_RawChunk`s.
+
+    The caller is responsible for handling the special `[DONE]` sentinel (which
+    terminates the stream) before invoking this. Malformed JSON is silently
+    skipped to match the prior sync behavior.
+    """
+    try:
+        obj = cast(OpenRouterResponseDelta | OpenRouterResponseError, json.loads(data))
+    except json.JSONDecodeError:
+        return
+    if 'error' in obj:
+        raise ValueError(f"Error from OpenRouter: {obj}")
+    try:
+        delta = obj["choices"][0]["delta"]
+    except (KeyError, IndexError):
+        delta = None
+
+    if delta is not None:
+        reasoning_text = _extract_reasoning_text(delta)
+        if reasoning_text:
+            yield _RawThoughtChunk(text=reasoning_text)
+
+        content = delta.get("content")
+        if content:
+            yield _RawContentChunk(text=content)
+
+        for tc_delta in delta.get("tool_calls") or []:
+            yield _tool_call_chunk_from_delta(tc_delta)
+
+    if "usage" in obj:
+        yield _RawUsage(usage=cast(TokiUsageMetadata, obj["usage"]))  # type: ignore[index]
 
 
 def _tool_call_chunk_from_delta(tc_delta: dict) -> _RawToolCallChunk:

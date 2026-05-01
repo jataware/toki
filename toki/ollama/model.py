@@ -1,9 +1,9 @@
 import json
 import warnings
-from typing import Any, Iterator, Sequence
+from typing import Any, AsyncIterator, Iterator, Sequence
 from uuid import uuid4
 
-from ollama import Client, ProgressResponse
+from ollama import AsyncClient, Client, ProgressResponse
 from tqdm import tqdm
 
 from ..model import (
@@ -66,14 +66,16 @@ class OllamaModel(BaseModel):
     """Toki frontend for a locally-running Ollama daemon.
 
     On construction, checks whether `model` is already pulled and pulls it (with a
-    tqdm progress bar) if not. Subsequent `complete()` calls go to the daemon's
-    `/api/chat` endpoint via the official `ollama` python client.
+    tqdm progress bar) if not. Subsequent `complete()` / `acomplete()` calls go to
+    the daemon's `/api/chat` endpoint via the official `ollama` python client.
     """
 
     def __init__(self, model: OllamaModelName | str, *, host: str | None = None):
         super().__init__()
         self.model = model
-        self._client = Client(host=host) if host is not None else Client()
+        client_kwargs: dict = {"host": host} if host is not None else {}
+        self._client = Client(**client_kwargs)
+        self._async_client = AsyncClient(**client_kwargs)
         self._warned_streaming_tools = False
         self._ensure_pulled()
 
@@ -124,19 +126,26 @@ class OllamaModel(BaseModel):
             if bar is not None:
                 bar.close()
 
-    # ----- complete override (one-shot streaming-tools warning) -------------
+    # ----- streaming-tools warning ------------------------------------------
 
-    def complete(self, messages, *, stream: bool = False, tools: Sequence | None = None, capture_thinking: bool = False, **kwargs):
+    def _maybe_warn_streaming_tools(self, stream: bool, tools: Sequence | None) -> None:
         if stream and tools and not self._warned_streaming_tools:
             if any(isinstance(t, StreamingToolSchema) for t in tools):
                 warnings.warn(
                     "OllamaModel emits each tool call as a single batch (id+name+arguments together) "
                     "rather than as per-character argument deltas. StreamingToolSchema still works, "
                     "but TokiArgStream values arrive in one shot.",
-                    stacklevel=2,
+                    stacklevel=3,
                 )
                 self._warned_streaming_tools = True
+
+    def complete(self, messages, *, stream: bool = False, tools: Sequence | None = None, capture_thinking: bool = False, **kwargs):
+        self._maybe_warn_streaming_tools(stream, tools)
         return super().complete(messages, stream=stream, tools=tools, capture_thinking=capture_thinking, **kwargs)
+
+    def acomplete(self, messages, *, stream: bool = False, tools: Sequence | None = None, capture_thinking: bool = False, **kwargs):
+        self._maybe_warn_streaming_tools(stream, tools)
+        return super().acomplete(messages, stream=stream, tools=tools, capture_thinking=capture_thinking, **kwargs)
 
     # ----- raw I/O ----------------------------------------------------------
 
@@ -156,12 +165,7 @@ class OllamaModel(BaseModel):
             stream=False,
             **kwargs,
         )
-        msg = response.message
-        content = msg.content or ''
-        thought = (msg.thinking or '') if capture_thinking else ''
-        tool_calls = [_to_toki_tool_call(tc) for tc in (msg.tool_calls or [])]
-        usage = _build_usage(response.prompt_eval_count, response.eval_count)
-        return _RawTurn(content=content, tool_calls=tool_calls, thought=thought, usage=usage)
+        return _turn_from_blocking_response(response, capture_thinking=capture_thinking)
 
     def _raw_streaming(
         self,
@@ -181,7 +185,7 @@ class OllamaModel(BaseModel):
         )
         # ollama hands tool_calls as fully-formed objects per chunk (not arg-fragment deltas).
         # Synthesize per-call a (id+name, then complete arguments_fragment) pair so the
-        # base StreamDriver / JsonStreamParser machinery can consume it normally.
+        # base StreamCore / JsonStreamParser machinery can consume it normally.
         next_tool_index = 0
         last_prompt_eval = None
         last_eval = None
@@ -194,10 +198,8 @@ class OllamaModel(BaseModel):
             for tc in (msg.tool_calls or []):
                 idx = next_tool_index
                 next_tool_index += 1
-                name = tc.function.name
-                args = dict(tc.function.arguments or {})
-                yield _RawToolCallChunk(index=idx, id=f"ollama-{uuid4().hex}", name=name)
-                yield _RawToolCallChunk(index=idx, arguments_fragment=json.dumps(args))
+                yield _RawToolCallChunk(index=idx, id=f"ollama-{uuid4().hex}", name=tc.function.name)
+                yield _RawToolCallChunk(index=idx, arguments_fragment=json.dumps(dict(tc.function.arguments or {})))
             if chunk.prompt_eval_count is not None:
                 last_prompt_eval = chunk.prompt_eval_count
             if chunk.eval_count is not None:
@@ -205,6 +207,72 @@ class OllamaModel(BaseModel):
         usage = _build_usage(last_prompt_eval, last_eval)
         if usage is not None:
             yield _RawUsage(usage=usage)
+
+    async def _raw_blocking_async(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> _RawTurn:
+        response = await self._async_client.chat(
+            model=self.model,
+            messages=_messages_to_wire(messages),
+            tools=tools,
+            think=capture_thinking or None,
+            stream=False,
+            **kwargs,
+        )
+        return _turn_from_blocking_response(response, capture_thinking=capture_thinking)
+
+    async def _raw_streaming_async(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        *,
+        capture_thinking: bool,
+        **kwargs,
+    ) -> AsyncIterator[_RawChunk]:
+        stream = await self._async_client.chat(
+            model=self.model,
+            messages=_messages_to_wire(messages),
+            tools=tools,
+            think=capture_thinking or None,
+            stream=True,
+            **kwargs,
+        )
+        next_tool_index = 0
+        last_prompt_eval = None
+        last_eval = None
+        async for chunk in stream:
+            msg = chunk.message
+            if capture_thinking and msg.thinking:
+                yield _RawThoughtChunk(text=msg.thinking)
+            if msg.content:
+                yield _RawContentChunk(text=msg.content)
+            for tc in (msg.tool_calls or []):
+                idx = next_tool_index
+                next_tool_index += 1
+                yield _RawToolCallChunk(index=idx, id=f"ollama-{uuid4().hex}", name=tc.function.name)
+                yield _RawToolCallChunk(index=idx, arguments_fragment=json.dumps(dict(tc.function.arguments or {})))
+            if chunk.prompt_eval_count is not None:
+                last_prompt_eval = chunk.prompt_eval_count
+            if chunk.eval_count is not None:
+                last_eval = chunk.eval_count
+        usage = _build_usage(last_prompt_eval, last_eval)
+        if usage is not None:
+            yield _RawUsage(usage=usage)
+
+
+def _turn_from_blocking_response(response: Any, *, capture_thinking: bool) -> _RawTurn:
+    """Translate a non-streaming ollama `ChatResponse` into a `_RawTurn`."""
+    msg = response.message
+    content = msg.content or ''
+    thought = (msg.thinking or '') if capture_thinking else ''
+    tool_calls = [_to_toki_tool_call(tc) for tc in (msg.tool_calls or [])]
+    usage = _build_usage(response.prompt_eval_count, response.eval_count)
+    return _RawTurn(content=content, tool_calls=tool_calls, thought=thought, usage=usage)
 
 
 def _to_toki_tool_call(tc: Any) -> TokiToolCall:

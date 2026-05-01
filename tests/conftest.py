@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from toki import (
+    AsyncTokiArgStream,
+    AsyncTokiToolCallStream,
     StreamingToolSchema,
     TokiArgStream,
     TokiThinking,
@@ -194,6 +196,35 @@ def drain_stream(generator, *, expected_arg_names: dict[str, str] | None = None)
                 _ = arg_stream.value
             # final drain to ensure `.arguments` is materialized
             _ = item.arguments
+            out["tool_streams"].append(item)
+        else:
+            raise AssertionError(f"unexpected item from stream: {type(item).__name__}: {item!r}")
+    return out
+
+
+async def adrain_stream(agen, *, expected_arg_names: dict[str, str] | None = None) -> dict[str, list]:
+    """Async sibling of `drain_stream`. Walks an `acomplete(stream=True)` async
+    generator and buckets items the same way."""
+    expected_arg_names = expected_arg_names or {}
+    out: dict[str, list] = {
+        "strings": [],
+        "thoughts": [],
+        "tool_calls": [],
+        "tool_streams": [],
+    }
+    async for item in agen:
+        if isinstance(item, str):
+            out["strings"].append(item)
+        elif isinstance(item, TokiThinking):
+            out["thoughts"].append(item)
+        elif isinstance(item, TokiToolCall):
+            out["tool_calls"].append(item)
+        elif isinstance(item, AsyncTokiToolCallStream):
+            arg_name = expected_arg_names.get(item.name)
+            if arg_name is not None:
+                arg_stream: AsyncTokiArgStream = item.expect_arg(arg_name)
+                _ = await arg_stream.value()
+            _ = await item.arguments()
             out["tool_streams"].append(item)
         else:
             raise AssertionError(f"unexpected item from stream: {type(item).__name__}: {item!r}")
