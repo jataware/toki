@@ -24,6 +24,17 @@ from ..model import (
 # See https://docs.litellm.ai/docs/reasoning_content
 litellm.modify_params = True
 
+# Route litellm's async path through httpx instead of its default aiohttp transport.
+# Aiohttp is marginally faster at very high concurrency but its cached `ClientSession`
+# is bound to the event loop it was first created on, which causes
+# `RuntimeError: Event loop is closed` (or post-exit "Fatal error on SSL transport"
+# spam) for any caller doing multiple `asyncio.run(...)` invocations or just exiting
+# after async use. httpx is what the sync path already uses; this gives transport
+# parity and clean shutdown. Power users doing high-concurrency batch work can
+# re-enable aiohttp by setting `litellm.disable_aiohttp_transport = False` after
+# importing toki.
+litellm.disable_aiohttp_transport = True
+
 
 # Server-side reasoning compute knob. Provider-supported subsets vary; the union below
 # covers every value any backend currently exposes. Pass `None` (the Python default) to
