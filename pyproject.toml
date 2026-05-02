@@ -46,6 +46,14 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Share one event loop across all async tests in a session. Per-function loops
+# (the pytest-asyncio default) cause litellm + httpx blow-ups: litellm caches
+# a `module_level_aclient` whose connection pool ends up bound to whichever
+# loop ran the first async call, and once that loop is torn down the next
+# test sees `RuntimeError: Event loop is closed` when the pool tries to
+# clean up stale connections via `loop.call_soon(...)`. Sharing the loop
+# keeps the cached clients valid for the whole run.
+asyncio_default_test_loop_scope = "session"
 # `--html` is set dynamically by `tests/conftest.py:pytest_configure` to a
 # timestamped file under `tests/results/`. We still want self-contained reports
 # so they're a single portable file.
