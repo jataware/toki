@@ -16,7 +16,7 @@ openrouter = ["requests>=2.32.5", "httpx>=0.27"]
 local = ["torch>=2.0", "transformers>=4.40"]
 litellm = ["litellm>=1.52"]
 openai = ["toki[litellm]"]
-google = ["toki[litellm]"]
+google = ["toki[litellm]", "google-genai>=1.0"]
 anthropic = ["toki[litellm]"]
 ollama = ["ollama>=0.6", "tqdm>=4"]
 all = ["toki[openrouter,local,openai,google,anthropic,ollama]"]
@@ -49,10 +49,18 @@ asyncio_mode = "auto"
 # `--html` is set dynamically by `tests/conftest.py:pytest_configure` to a
 # timestamped file under `tests/results/`. We still want self-contained reports
 # so they're a single portable file.
+#
+# `cache_integration`-marked tests hit real provider caching APIs and cost
+# money per run, so we exclude them from the default suite. Run them
+# explicitly with `pytest -m cache_integration`.
 addopts = [
     "-ra",
     "--strict-markers",
     "--self-contained-html",
+    "-m", "not cache_integration",
+]
+markers = [
+    "cache_integration: hits real provider APIs to verify caching end-to-end (skipped by default; run with `pytest -m cache_integration`)",
 ]
 
 [project.scripts]

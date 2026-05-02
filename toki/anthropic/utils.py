@@ -1,4 +1,5 @@
 import os
+from typing import Literal
 
 
 def get_anthropic_api_key() -> str:
@@ -22,3 +23,91 @@ def list_anthropic_models() -> list[str]:
             "run the `toki-fetch-anthropic-models` script to generate it."
         ) from e
     return list(attributes_map.keys())
+
+
+# ---------- prompt-caching marker helpers ----------------------------------
+#
+# Anthropic's prompt caching is driven by `cache_control: {type: 'ephemeral'}`
+# markers placed on individual content blocks (text/tool_use/tool_result) and
+# on tool definitions. Every block with a marker becomes a *cache breakpoint*;
+# the model writes a cache up to the marker on the first call and reads from
+# the cache on subsequent calls whose prefix matches.
+#
+# OpenRouter mirrors this format on its `anthropic/*` routes (see
+# `toki/openrouter/model.py`), so this helper is shared between both backends.
+
+
+def build_cache_control(ttl: Literal['5m', '1h']) -> dict:
+    """Anthropic cache_control payload. `'5m'` is the default TTL on Anthropic's
+    side, so we omit the explicit `ttl` field for the 5-minute case."""
+    if ttl == '1h':
+        return {"type": "ephemeral", "ttl": "1h"}
+    return {"type": "ephemeral"}
+
+
+def _with_text_cache_marker(msg: dict, marker: dict) -> dict:
+    """Return a shallow copy of `msg` whose content is a list-of-blocks with
+    `cache_control` on the last block. If the message has no usable content,
+    returns the original `msg` unchanged.
+    """
+    content = msg.get("content")
+    if isinstance(content, list):
+        if not content:
+            return msg
+        new_blocks = list(content)
+        last = dict(new_blocks[-1])
+        last["cache_control"] = marker
+        new_blocks[-1] = last
+        new_msg = dict(msg)
+        new_msg["content"] = new_blocks
+        return new_msg
+    if isinstance(content, str) and content:
+        new_msg = dict(msg)
+        new_msg["content"] = [{"type": "text", "text": content, "cache_control": marker}]
+        return new_msg
+    return msg
+
+
+def apply_cache_markers(
+    wire_messages: list[dict],
+    wire_tools: list[dict] | None,
+    *,
+    mode: Literal['rolling', 'static'],
+    anchor_index: int,
+    ttl: Literal['5m', '1h'] = '5m',
+) -> tuple[list[dict], list[dict] | None]:
+    """Place `cache_control` markers on the system message, the last tool
+    definition, and one boundary message — without mutating the input lists.
+
+    Boundary message:
+      - `'rolling'`: `wire_messages[-1]` (latest message; cache advances each
+        turn as new messages are appended).
+      - `'static'`: `wire_messages[anchor_index - 1]` (pinned snapshot
+        boundary).
+
+    Anthropic supports up to 4 breakpoints; we use at most 3 (system, tools,
+    boundary). Used by both `AnthropicModel` and `OpenRouterModel` on the
+    `anthropic/*` route.
+    """
+    marker = build_cache_control(ttl)
+
+    new_messages = list(wire_messages)
+    new_tools = list(wire_tools) if wire_tools else wire_tools
+
+    sys_idx = next((i for i, m in enumerate(new_messages) if m.get("role") == "system"), None)
+    if sys_idx is not None:
+        new_messages[sys_idx] = _with_text_cache_marker(new_messages[sys_idx], marker)
+
+    if new_tools:
+        last_tool = dict(new_tools[-1])
+        last_tool["cache_control"] = marker
+        new_tools[-1] = last_tool
+
+    if mode == 'rolling':
+        boundary = len(new_messages) - 1
+    else:
+        boundary = anchor_index - 1
+    if 0 <= boundary < len(new_messages) and boundary != sys_idx:
+        new_messages[boundary] = _with_text_cache_marker(new_messages[boundary], marker)
+
+    return new_messages, new_tools

@@ -1,5 +1,4 @@
 import json
-import warnings
 from typing import Any, AsyncIterator, Iterator, Literal
 
 import litellm
@@ -81,24 +80,45 @@ class _LiteLLMModel(BaseModel):
         api_key: str,
         reasoning_effort: ReasoningEffort | None = None,
         allow_parallel_tool_calls: bool = False,
-        cache: bool = False,
     ):
         super().__init__()
-        if cache:
-            warnings.warn("cache=True is not yet implemented; ignoring", stacklevel=2)
         self._wire_model = wire_model
         self.api_key = api_key
         self.reasoning_effort = reasoning_effort
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
 
-    def _build_kwargs(self, tools: list[dict] | None, capture_thinking: bool, kwargs: dict) -> dict:
-        out: dict = dict(kwargs)
+    def _prepare_call(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        kwargs: dict,
+    ) -> tuple[list[dict], dict]:
+        """Subclass hook: produce final wire `messages` and merged call kwargs.
+
+        Default impl serializes each `TokiMessage` and merges `tools` /
+        `reasoning_effort` into the kwargs dict. Subclasses override to inject
+        cache_control markers, manage explicit caches, or otherwise transform
+        the call before it hits litellm.
+        """
+        out_kwargs: dict = dict(kwargs)
         if tools:
-            out["tools"] = tools
-            out.setdefault("parallel_tool_calls", self.allow_parallel_tool_calls)
-        if self.reasoning_effort is not None and "reasoning_effort" not in out and "thinking" not in out:
-            out["reasoning_effort"] = self.reasoning_effort
-        return out
+            out_kwargs["tools"] = tools
+            out_kwargs.setdefault("parallel_tool_calls", self.allow_parallel_tool_calls)
+        if self.reasoning_effort is not None and "reasoning_effort" not in out_kwargs and "thinking" not in out_kwargs:
+            out_kwargs["reasoning_effort"] = self.reasoning_effort
+        wire_messages = [_msg_to_wire(m) for m in messages]
+        return wire_messages, out_kwargs
+
+    async def _aprepare_call(
+        self,
+        messages: list[TokiMessage],
+        tools: list[dict] | None,
+        kwargs: dict,
+    ) -> tuple[list[dict], dict]:
+        """Async sibling of `_prepare_call`. Default impl just delegates to the
+        sync version; subclasses with async-only side effects (e.g. native
+        Google cache creation via `client.aio.caches.create`) override this."""
+        return self._prepare_call(messages, tools, kwargs)
 
     def _raw_blocking(
         self,
@@ -108,11 +128,11 @@ class _LiteLLMModel(BaseModel):
         capture_thinking: bool,
         **kwargs,
     ) -> _RawTurn:
-        call_kwargs = self._build_kwargs(tools, capture_thinking, kwargs)
+        wire_messages, call_kwargs = self._prepare_call(messages, tools, kwargs)
         response = litellm.completion(
             model=self._wire_model,
             api_key=self.api_key,
-            messages=[_msg_to_wire(m) for m in messages],
+            messages=wire_messages,
             stream=False,
             **call_kwargs,
         )
@@ -126,11 +146,11 @@ class _LiteLLMModel(BaseModel):
         capture_thinking: bool,
         **kwargs,
     ) -> Iterator[_RawChunk]:
-        call_kwargs = self._build_kwargs(tools, capture_thinking, kwargs)
+        wire_messages, call_kwargs = self._prepare_call(messages, tools, kwargs)
         stream = litellm.completion(
             model=self._wire_model,
             api_key=self.api_key,
-            messages=[_msg_to_wire(m) for m in messages],
+            messages=wire_messages,
             stream=True,
             **call_kwargs,
         )
@@ -145,11 +165,11 @@ class _LiteLLMModel(BaseModel):
         capture_thinking: bool,
         **kwargs,
     ) -> _RawTurn:
-        call_kwargs = self._build_kwargs(tools, capture_thinking, kwargs)
+        wire_messages, call_kwargs = await self._aprepare_call(messages, tools, kwargs)
         response = await litellm.acompletion(
             model=self._wire_model,
             api_key=self.api_key,
-            messages=[_msg_to_wire(m) for m in messages],
+            messages=wire_messages,
             stream=False,
             **call_kwargs,
         )
@@ -163,11 +183,11 @@ class _LiteLLMModel(BaseModel):
         capture_thinking: bool,
         **kwargs,
     ) -> AsyncIterator[_RawChunk]:
-        call_kwargs = self._build_kwargs(tools, capture_thinking, kwargs)
+        wire_messages, call_kwargs = await self._aprepare_call(messages, tools, kwargs)
         stream = await litellm.acompletion(
             model=self._wire_model,
             api_key=self.api_key,
-            messages=[_msg_to_wire(m) for m in messages],
+            messages=wire_messages,
             stream=True,
             **call_kwargs,
         )
