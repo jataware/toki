@@ -16,8 +16,10 @@ print(response)
 ```
 
 ## Feature Overview
-- **Same code, any backend.** OpenRouter, OpenAI, Anthropic, Google, Ollama, and local HuggingFace models all share one `BaseModel` interface; blocking completions, streaming, tools, and thinking capture work identically across providers.
+- **Same code, any backend.** OpenRouter, OpenAI, Anthropic, Google, Ollama, and local HuggingFace models all share one `BaseModel` interface; blocking completions, streaming, sync, async, tools, and thinking capture work identically across providers.
 - **Streaming, all the way down.** Yields content tokens, thinking tokens, *and* tool-call argument values as they arrive. Most libraries only stream content text; toki lets you consume a tool's args character-by-character while the model is still emitting them.
+- **Native async, no thread wrapping.** Every backend ships a real `acomplete()` / `aexecute()` (litellm's `acompletion`, `httpx.AsyncClient`, `ollama.AsyncClient`, and an `asyncio.Queue` bridge for the local `transformers` worker thread). Same args, same chunk semantics, same typing overloads — see [Async usage](#async-usage).
+- **Provider-aware prompt caching.** A single `cache='rolling' | 'static'` knob plumbs through to each backend's native caching: Anthropic `cache_control` markers, Gemini explicit `cachedContents` resources, OpenRouter routing — see [Caching](#caching).
 - **Conversation + agentic flow.** `Agent` tracks message history and tool usage; `StateMachine` / `ClassStateMachine` structure flows for complex multi-agent interactions.
 - **Strongly typed surface.** Per-backend `<Provider>ModelName` literals give IDE autocomplete on real model ids; `Agent[WithStaticTools]` etc. specialize `execute()`'s return type to the tools shape you're using.
 - **Minimal core, pluggable backends.** Plain `pip install toki` is dep-free; install only the extras you need (`toki[ollama]`, `toki[openrouter]`, `toki[openai]`, ...).
@@ -46,7 +48,7 @@ A back-and-forth shell that streams the model's response token-by-token. Full co
 from toki import Agent, LocalModel
 from easyrepl import REPL  # pip install easyrepl
 
-agent = Agent(LocalModel("Qwen/Qwen3:1.7b"))
+agent = Agent(LocalModel("Qwen/Qwen3-1.7B"))
 for query in REPL():
     agent.add_user_message(query)
     for chunk in agent.execute(stream=True):
@@ -185,7 +187,7 @@ The `Model` constructor is the only thing that changes between backends.
 
 ### Notes:
 - `OllamaModel` checks whether the requested tag is already pulled and, if not, pulls it before returning. Subsequent constructions skip straight to the chat.
-- The litellm-backed frontends (`OpenAIModel`, `AnthropicModel`, `GoogleModel`) accept additional shared kwargs: `reasoning_effort`, `allow_parallel_tool_calls`, `cache`. See [Capturing Thinking](#capturing-thinking) for `reasoning_effort`.
+- The litellm-backed frontends (`OpenAIModel`, `AnthropicModel`, `GoogleModel`) all accept `reasoning_effort` (see [Capturing Thinking](#capturing-thinking)) and `allow_parallel_tool_calls`. `AnthropicModel`, `GoogleModel`, and `OpenRouterModel` additionally take `cache=` (see [Caching](#caching)) — `OpenAIModel`, `OllamaModel`, and `LocalModel` don't, since their cache behavior isn't user-controllable.
 - Toki targets instruction-tuned chat models — anything that ships a tokenizer `chat_template` (Qwen-Instruct, Llama-Instruct, Gemma-`-it`, etc.). Base / pretrained-only checkpoints aren't supported; for raw text continuation, use `transformers` directly.
 - Browse all OpenRouter models: [openrouter.ai/models](https://openrouter.ai/models).
 
@@ -762,7 +764,7 @@ Each handler returns the next `State` (or `END_STATE` to terminate).
 
 ## Roadmap
 
-- **Async support.** Likely will consist of a set of helper functions that convert model generator responses into async responses. TBD if it's straightforward to integrate these into async methods models/agents can provide, or if it will be up to the end user to wrap the synchronous methods.
+- **More examples/case studies** basically want a larger set of examples of how toki can be used and integrated into a variety of different LLM workflows. Especially want to link cases where toki can replace an existing bespoke backend e.g. adhoc-api, etc.
 - **ReAct-style agents.** Examples — and possibly a small helper — orchestrating "thought / action / observation" loops on top of `Agent` + tools and a `StateMachine`.
 - **Tool-schema generation from Python callables.** clear examples of supporting libraries that can help converting functions to schemas for tool calling. perhaps a minimal interface or demo of the ReAct flow. Additionally, may include functionality for augmenting non-tool-supporting models with tools via a plain-text interface
 
