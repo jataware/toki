@@ -1,11 +1,13 @@
 import json
 import warnings
-from typing import Any, AsyncIterator, Iterator, TypedDict, cast
+from typing import Any, AsyncIterator, Iterator, Literal, TypedDict, cast
 
 import httpx
 import requests
 from typing_extensions import NotRequired
 
+from ..anthropic.utils import _with_text_cache_marker, apply_cache_markers, build_cache_control
+from ..helpers.cache_state import _CacheState, estimate_messages_tokens
 from ..model import (
     BaseModel,
     TokiMessage,
@@ -19,6 +21,12 @@ from ..model import (
     _RawUsage,
 )
 from .models import OpenRouterModelName
+
+
+# OpenRouter (like Anthropic) requires the cacheable prefix to clear ~1024
+# tokens before any cache write happens. We use the same chars/4 estimate
+# the rest of toki does.
+_OPENROUTER_MIN_CACHE_TOKENS = 1024
 
 
 class OpenRouterReasoningDetail(TypedDict):
@@ -98,24 +106,127 @@ def _extract_reasoning_text(payload: OpenRouterMessagePayload | OpenRouterRespon
 
 
 class OpenRouterModel(BaseModel):
-    """Toki model backend that talks to OpenRouter's chat-completions API over HTTPS."""
+    """Toki model backend that talks to OpenRouter's chat-completions API over HTTPS.
 
-    def __init__(self, model: OpenRouterModelName, api_key: str, allow_parallel_tool_calls: bool = False, cache: bool = False):
+    Caching is opt-in via `cache=`:
+
+      - `anthropic/*` route — `'rolling'` adds a top-level `cache_control`
+        breakpoint that OpenRouter auto-advances each turn; `'static'` places
+        explicit per-block markers via the shared `apply_cache_markers`
+        helper at a snapshotted anchor point.
+      - `google/*` route — places a single `cache_control` marker on the
+        latest user message (`'rolling'`) or on the snapshot anchor message
+        (`'static'`). OpenRouter manages cache lifecycle server-side; the
+        `cache_ttl` kwarg has no effect on this route (Gemini caches default
+        to ~5 minutes).
+      - Any other prefix — `cache=` triggers a `UserWarning` at construction
+        because the upstream provider doesn't honor caching breakpoints.
+
+    `model.cache` is a regular mutable attribute and `model.invalidate_cache()`
+    drops the historical anchor list. The `_CacheState` helper retains every
+    historical anchor so reverting to a previously-cached prefix silently
+    rehydrates without re-snapshotting.
+    """
+
+    def __init__(
+        self,
+        model: OpenRouterModelName,
+        api_key: str,
+        allow_parallel_tool_calls: bool = False,
+        *,
+        cache: Literal['rolling', 'static'] | None = None,
+        cache_ttl: Literal['5m', '1h'] = '5m',
+    ):
         super().__init__()
-        if cache:
-            warnings.warn("cache=True is not yet implemented; ignoring", stacklevel=2)
         self.model = model
         self.api_key = api_key
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
+        self.cache = cache
+        self.cache_ttl = cache_ttl
+        self._cache_state = _CacheState(min_cache_size_estimate=_OPENROUTER_MIN_CACHE_TOKENS)
+        if cache is not None and self._cache_route() is None:
+            warnings.warn(
+                f"OpenRouter caching has no effect for {model!r}; provider does not support caching breakpoints.",
+                stacklevel=2,
+            )
+
+    def invalidate_cache(self) -> None:
+        """Drop the historical anchor list. Next `'static'` call will defer
+        until the prefix is large enough and snapshot afresh."""
+        self._cache_state.clear()
+
+    def _cache_route(self) -> Literal['anthropic', 'google'] | None:
+        if self.model.startswith('anthropic/'):
+            return 'anthropic'
+        if self.model.startswith('google/'):
+            return 'google'
+        return None
+
+    def _apply_caching(
+        self,
+        messages: list[TokiMessage],
+        wire_messages: list[dict],
+        wire_tools: list[dict] | None,
+        tools: list[dict] | None,
+    ) -> tuple[list[dict], list[dict] | None, dict]:
+        """Returns (wire_messages, wire_tools, payload_extra). `payload_extra`
+        carries any top-level fields (only used for the anthropic auto-mode
+        cache_control)."""
+        route = self._cache_route()
+        if self.cache is None or route is None:
+            return wire_messages, wire_tools, {}
+
+        if route == 'anthropic':
+            if self.cache == 'rolling':
+                # OpenRouter auto-advances the breakpoint based on conversation length.
+                return wire_messages, wire_tools, {"cache_control": build_cache_control(self.cache_ttl)}
+            entry = self._cache_state.match_or_snapshot(
+                strategy='static',
+                messages=messages,
+                system=None,
+                tools=tools,
+                prefix_token_estimate=estimate_messages_tokens(None, tools, messages),
+            )
+            if entry is None:
+                return wire_messages, wire_tools, {}
+            new_msgs, new_tools = apply_cache_markers(
+                wire_messages, wire_tools, mode='static',
+                anchor_index=entry.anchor_index, ttl=self.cache_ttl,
+            )
+            return new_msgs, new_tools, {}
+
+        # google route
+        marker = build_cache_control('5m')
+        if self.cache == 'rolling':
+            idx = len(wire_messages) - 1
+        else:
+            entry = self._cache_state.match_or_snapshot(
+                strategy='static',
+                messages=messages,
+                system=None,
+                tools=tools,
+                prefix_token_estimate=estimate_messages_tokens(None, tools, messages),
+            )
+            if entry is None:
+                return wire_messages, wire_tools, {}
+            idx = entry.anchor_index - 1
+        if not (0 <= idx < len(wire_messages)):
+            return wire_messages, wire_tools, {}
+        new_msgs = list(wire_messages)
+        new_msgs[idx] = _with_text_cache_marker(new_msgs[idx], marker)
+        return new_msgs, wire_tools, {}
 
     def _build_payload(self, messages: list[TokiMessage], tools: list[dict] | None, capture_thinking: bool, stream: bool, kwargs: dict) -> dict:
-        tool_payload = {"tools": tools, "parallel_tool_calls": self.allow_parallel_tool_calls} if tools else {}
+        wire_messages = [_msg_to_wire(m) for m in messages]
+        wire_messages, wire_tools, payload_extra = self._apply_caching(messages, wire_messages, tools, tools)
+        tool_payload = {"tools": wire_tools, "parallel_tool_calls": self.allow_parallel_tool_calls} if wire_tools else {}
         reasoning_payload = {"reasoning": {"enabled": True}} if capture_thinking else {}
         payload: dict = {
             "model": self.model,
-            "messages": [_msg_to_wire(m) for m in messages],
+            "messages": wire_messages,
             **tool_payload,
             **reasoning_payload,
+            **payload_extra,
             **kwargs,
         }
         if stream:

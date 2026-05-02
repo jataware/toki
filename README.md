@@ -16,8 +16,10 @@ print(response)
 ```
 
 ## Feature Overview
-- **Same code, any backend.** OpenRouter, OpenAI, Anthropic, Google, Ollama, and local HuggingFace models all share one `BaseModel` interface; blocking completions, streaming, tools, and thinking capture work identically across providers.
+- **Same code, any backend.** OpenRouter, OpenAI, Anthropic, Google, Ollama, and local HuggingFace models all share one `BaseModel` interface; blocking completions, streaming, sync, async, tools, and thinking capture work identically across providers.
 - **Streaming, all the way down.** Yields content tokens, thinking tokens, *and* tool-call argument values as they arrive. Most libraries only stream content text; toki lets you consume a tool's args character-by-character while the model is still emitting them.
+- **Native async, no thread wrapping.** Every backend ships a real `acomplete()` / `aexecute()` (litellm's `acompletion`, `httpx.AsyncClient`, `ollama.AsyncClient`, and an `asyncio.Queue` bridge for the local `transformers` worker thread). Same args, same chunk semantics, same typing overloads — see [Async usage](#async-usage).
+- **Provider-aware prompt caching.** A single `cache='rolling' | 'static'` knob plumbs through to each backend's native caching: Anthropic `cache_control` markers, Gemini explicit `cachedContents` resources, OpenRouter routing — see [Caching](#caching).
 - **Conversation + agentic flow.** `Agent` tracks message history and tool usage; `StateMachine` / `ClassStateMachine` structure flows for complex multi-agent interactions.
 - **Strongly typed surface.** Per-backend `<Provider>ModelName` literals give IDE autocomplete on real model ids; `Agent[WithStaticTools]` etc. specialize `execute()`'s return type to the tools shape you're using.
 - **Minimal core, pluggable backends.** Plain `pip install toki` is dep-free; install only the extras you need (`toki[ollama]`, `toki[openrouter]`, `toki[openai]`, ...).
@@ -46,7 +48,7 @@ A back-and-forth shell that streams the model's response token-by-token. Full co
 from toki import Agent, LocalModel
 from easyrepl import REPL  # pip install easyrepl
 
-agent = Agent(LocalModel("Qwen/Qwen3:1.7b"))
+agent = Agent(LocalModel("Qwen/Qwen3-1.7B"))
 for query in REPL():
     agent.add_user_message(query)
     for chunk in agent.execute(stream=True):
@@ -185,7 +187,7 @@ The `Model` constructor is the only thing that changes between backends.
 
 ### Notes:
 - `OllamaModel` checks whether the requested tag is already pulled and, if not, pulls it before returning. Subsequent constructions skip straight to the chat.
-- The litellm-backed frontends (`OpenAIModel`, `AnthropicModel`, `GoogleModel`) accept additional shared kwargs: `reasoning_effort`, `allow_parallel_tool_calls`, `cache`. See [Capturing Thinking](#capturing-thinking) for `reasoning_effort`.
+- The litellm-backed frontends (`OpenAIModel`, `AnthropicModel`, `GoogleModel`) all accept `reasoning_effort` (see [Capturing Thinking](#capturing-thinking)) and `allow_parallel_tool_calls`. `AnthropicModel`, `GoogleModel`, and `OpenRouterModel` additionally take `cache=` (see [Caching](#caching)) — `OpenAIModel`, `OllamaModel`, and `LocalModel` don't, since their cache behavior isn't user-controllable.
 - Toki targets instruction-tuned chat models — anything that ships a tokenizer `chat_template` (Qwen-Instruct, Llama-Instruct, Gemma-`-it`, etc.). Base / pretrained-only checkpoints aren't supported; for raw text continuation, use `transformers` directly.
 - Browse all OpenRouter models: [openrouter.ai/models](https://openrouter.ai/models).
 
@@ -295,6 +297,67 @@ GoogleModel("gemini-2.5-pro",       api_key=..., reasoning_effort="low")
 ```
 
 Accepted values: `'minimal' | 'low' | 'medium' | 'high' | 'xhigh'`; provider-supported subsets vary, and `None` (the default) disables reasoning entirely.
+
+## Caching
+
+Backends that have actual choices to make about prompt caching expose a `cache=` constructor kwarg taking `'rolling' | 'static' | None`. Backends whose caching is fully automatic (or not implemented) intentionally have *no* `cache=` kwarg — passing one raises the standard Python `TypeError: unexpected keyword argument`.
+
+```python
+AnthropicModel("claude-sonnet-4-5", api_key=..., cache='rolling')
+GoogleModel("gemini-2.5-flash",     api_key=..., cache='static')
+OpenRouterModel("anthropic/claude-haiku-4-5", api_key=..., cache='rolling')
+```
+
+### Rolling vs static
+
+- `cache='rolling'` — every turn, toki re-marks the most recent message (or recreates the cache, on native Google) so the cache breakpoint advances with the conversation. Whether this actually produces *reads* across turns depends on the backend:
+    - **Native Google**: yes. toki manages `cachedContents/<id>` resource names directly and reuses the same name across turns until growth or expiry forces a refresh, so call N+1 reads call N's cache.
+    - **OpenRouter `google/*`**: yes. Gemini's lookup matches longer prefixes containing prior breakpoints.
+    - **Native Anthropic** and **OpenRouter `anthropic/*`**: rolling engages caching every turn (the marker reaches the API and a fresh cache is *written*) but doesn't reliably produce reads — Anthropic's per-breakpoint lookup is keyed by the exact prefix hash up to the marker position, and rolling moves the marker each turn, so call N+1's lookup misses call N's entry. Use `'static'` instead for deterministic cache hits on Claude.
+- `cache='static'` — the first time the conversation is large enough to actually be cached, toki snapshots `len(messages)` as a fixed *anchor index* and pins the cache breakpoint there. The anchor never advances on its own. Subsequent calls hit the cache for `messages[:anchor]`; everything past it is sent live. Produces deterministic reads on every backend that supports caching at all. Best for one-shot or short-tail use cases over a large fixed prefix.
+
+For controllable backends, the snapshot is *deferred*: the anchor only lands on the first call where the prefix clears the per-backend minimum (1024 tokens for Anthropic / OpenRouter, 4096 for Google by default — both estimated offline as `chars/4` to avoid a token-count round-trip). Calls before that pass through with no caching activity.
+
+### Mid-session strategy switching
+
+`model.cache` is a regular mutable attribute and may be reassigned between calls without re-instantiating the model. Each switch just changes which lookup logic runs on the next call:
+
+```python
+model = AnthropicModel(..., cache='static')
+agent = Agent(model)
+# ... static-mode turns build up a pinned anchor ...
+
+model.cache = 'rolling'   # next turn marks the latest user message
+agent.execute()           # rolling pass; appends a new entry to anchor history
+
+model.cache = 'static'    # back to static
+agent.execute()           # original anchor's prefix still matches → silent reuse
+```
+
+Internally toki keeps a list of historical anchor entries (capped at 16, oldest pruned, expired ones lazily dropped). Walking newest-first, any entry whose `prefix_hash` still matches the current `messages[:anchor_index]` is reused — so reverting to a prior conversation state (e.g. branching off a compaction) silently rehydrates an existing cache. If history mutation invalidates the active anchor while in `'static'` mode, you get a `UserWarning` and a fresh anchor is snapshotted; older entries stay in the list for potential revert.
+
+To force a brand-new anchor (e.g. you've just compacted history and want the next snapshot to land at the new boundary):
+
+```python
+model.invalidate_cache()
+```
+
+This drops the anchor history. The next `'static'` call defers until the new prefix is large enough, then snapshots fresh.
+
+### Per-backend behavior
+
+| Backend | `cache=` kwarg | Default | What happens |
+|---|---|---|---|
+| **AnthropicModel** | `'rolling' \| 'static' \| None` | `None` | Injects up to 3 `cache_control` markers (system + last tool + boundary message). Non-mutating: `Agent.messages` is never touched; markers are placed on per-call wire copies. `cache_ttl: '5m' \| '1h'` (default `'5m'`). **Note**: Anthropic's per-breakpoint cache lookup keys on the exact prefix hash up to each marker position. `'static'` is the deterministic-cache-hit path (markers stay pinned); `'rolling'` writes a fresh cache entry each turn but does not reliably read prior turns' caches. |
+| **GoogleModel** | `'rolling' \| 'static' \| None` | `None` | Drives the explicit-cache lifecycle through the `google-genai` SDK: creates `cachedContents/<id>` resources and passes the name to litellm via `cached_content=`. Knobs: `cache_ttl`, `cache_min_tokens`, `cache_refresh_delta_tokens`, `cache_refresh_buffer_seconds`. With `cache=None`, Gemini's *implicit* caching (automatic on 2.5+/3.x models) still applies. |
+| **OpenRouterModel** | `'rolling' \| 'static' \| None` | `None` | Routed by model-id prefix. `anthropic/*` rolling sets a top-level `cache_control` on the latest user message (engages caching but, like native Anthropic, doesn't read prior turns' entries — use `'static'` for reads); `anthropic/*` static places explicit per-block markers at the snapshot anchor; `google/*` places a single marker at the latest user (rolling) or anchor (static), and Gemini's prefix-matching lookup *does* produce reads in both modes. Other prefixes warn at construction. `cache_ttl` only applies on the anthropic route. |
+| **OpenAIModel** | *(absent)* | n/a | OpenAI's prompt-prefix cache is fully automatic for prompts ≥ 1024 tokens and cannot be disabled or controlled — toki has nothing to add at the wire level. |
+| **OllamaModel** | *(absent)* | n/a | The Ollama daemon does prefix KV-cache reuse on its own across sequential calls; toki has nothing to add. |
+| **LocalModel** | *(absent)* | n/a | Cross-call KV-cache reuse isn't implemented yet; would need a `past_key_values` tensor held across calls plus invalidation logic for any history mutation. |
+
+For native Google: cache creation goes through `client.caches.create()` (or `client.aio.caches.create()` on async paths). Failures (model not supported, prompt too small, quota, network) are caught and the call falls back to a non-cached request after emitting a `UserWarning`. Caches are not deleted server-side when superseded; they expire on Google's TTL (default 1 hour, configurable via `cache_ttl=`).
+
+A note on shared models across concurrent agents: `_CacheState` lives on the model instance, so sharing one strategy-bearing model across multiple `Agent`s with diverging histories will thrash the cache (each agent's prefix invalidates the other's anchor). Use one model per long-running agent.
 
 ## Tools (function calling)
 
@@ -701,8 +764,7 @@ Each handler returns the next `State` (or `END_STATE` to terminate).
 
 ## Roadmap
 
-- **Painless caching.** All hosted backends already accept a `cache=False` constructor kwarg; today it's a no-op (with a warning when set to `True`). Plan: per backend handling of using caching for model conversation and response. Toki interface will be `caching=True` wheras backends will perform whatever steps necessary to activate the cache for that particular provider (if they support caching)
-- **Async support.** Likely will consist of a set of helper functions that convert model generator responses into async responses. TBD if it's straightforward to integrate these into async methods models/agents can provide, or if it will be up to the end user to wrap the synchronous methods.
+- **More examples/case studies** basically want a larger set of examples of how toki can be used and integrated into a variety of different LLM workflows. Especially want to link cases where toki can replace an existing bespoke backend e.g. adhoc-api, etc.
 - **ReAct-style agents.** Examples — and possibly a small helper — orchestrating "thought / action / observation" loops on top of `Agent` + tools and a `StateMachine`.
 - **Tool-schema generation from Python callables.** clear examples of supporting libraries that can help converting functions to schemas for tool calling. perhaps a minimal interface or demo of the ReAct flow. Additionally, may include functionality for augmenting non-tool-supporting models with tools via a plain-text interface
 
