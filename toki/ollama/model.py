@@ -1,6 +1,6 @@
 import json
 import warnings
-from typing import Any, AsyncIterator, Iterator, Sequence
+from typing import Any, AsyncIterator, Iterator, Literal, Sequence
 from uuid import uuid4
 
 from ollama import AsyncClient, Client, ProgressResponse
@@ -13,12 +13,14 @@ from ..model import (
     TokiToolCall,
     TokiToolFunction,
     TokiUsageMetadata,
+    ToolsArg,
     _RawChunk,
     _RawContentChunk,
     _RawThoughtChunk,
     _RawToolCallChunk,
     _RawTurn,
     _RawUsage,
+    _unwrap_tools,
 )
 from .models import OllamaModelName
 
@@ -52,6 +54,16 @@ def _messages_to_wire(messages: list[TokiMessage]) -> list[dict]:
             wire["tool_name"] = id_to_name.get(m.tool_call_id, "")
         out.append(wire)
     return out
+
+
+def _prepare_for_count(
+    messages: list[TokiMessage | dict],
+    tools: ToolsArg,
+) -> tuple[list[dict], list[dict] | None]:
+    """Normalize messages and tools into the wire shapes the daemon expects for a count request."""
+    normalized = [TokiMessage.from_dict(m) for m in messages]
+    wire_tools, _ = _unwrap_tools(tools)
+    return _messages_to_wire(normalized), wire_tools
 
 
 def _build_usage(prompt_eval_count: int | None, eval_count: int | None) -> TokiUsageMetadata | None:
@@ -146,6 +158,68 @@ class OllamaModel(BaseModel):
     def acomplete(self, messages, *, stream: bool = False, tools: Sequence | None = None, capture_thinking: bool = False, **kwargs):
         self._maybe_warn_streaming_tools(stream, tools)
         return super().acomplete(messages, stream=stream, tools=tools, capture_thinking=capture_thinking, **kwargs)
+
+    # ----- token counting ---------------------------------------------------
+
+    def count_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact'] = 'exact',
+    ) -> int:
+        """
+        Count the prompt tokens for the given messages (and tools).
+        
+        Produces the EXACT prompt-token count from the Ollama daemon. Issues a
+        `chat(..., options={'num_predict': 0})` call and reads
+        `response.prompt_eval_count` — the same field the daemon would
+        populate on a real generation call. The returned `int` is the
+        ground-truth token count for the model's tokenizer.
+
+        Only `kind='exact'` is exposed; passing any other value raises
+        `ValueError`. The call requires the daemon to be reachable, but
+        since the typical setup runs Ollama on `localhost`, there's no
+        meaningful "offline" alternative to expose.
+        """
+        if kind != 'exact':
+            raise ValueError(f"OllamaModel only supports kind='exact'; got {kind!r}")
+        wire_messages, wire_tools = _prepare_for_count(messages, tools)
+        response = self._client.chat(
+            model=self.model,
+            messages=wire_messages,
+            tools=wire_tools,
+            stream=False,
+            options={"num_predict": 0},
+        )
+        count = response.prompt_eval_count
+        if count is None:
+            raise RuntimeError("ollama daemon did not return prompt_eval_count for token-count request")
+        return count
+
+    async def acount_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact'] = 'exact',
+    ) -> int:
+        """Async sibling of `count_tokens`. Same behavior, dispatched through
+        `ollama.AsyncClient`."""
+        if kind != 'exact':
+            raise ValueError(f"OllamaModel only supports kind='exact'; got {kind!r}")
+        wire_messages, wire_tools = _prepare_for_count(messages, tools)
+        response = await self._async_client.chat(
+            model=self.model,
+            messages=wire_messages,
+            tools=wire_tools,
+            stream=False,
+            options={"num_predict": 0},
+        )
+        count = response.prompt_eval_count
+        if count is None:
+            raise RuntimeError("ollama daemon did not return prompt_eval_count for token-count request")
+        return count
 
     # ----- raw I/O ----------------------------------------------------------
 

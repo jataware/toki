@@ -1,19 +1,24 @@
+import asyncio
 import json
+import threading
 from typing import Any, AsyncIterator, Iterator, Literal
 
 import litellm
 
 from ..model import (
     BaseModel,
+    TokenCountEstimate,
     TokiMessage,
     TokiToolCall,
     TokiUsageMetadata,
+    ToolsArg,
     _RawChunk,
     _RawContentChunk,
     _RawThoughtChunk,
     _RawToolCallChunk,
     _RawTurn,
     _RawUsage,
+    _unwrap_tools,
 )
 
 
@@ -194,6 +199,121 @@ class _LiteLLMModel(BaseModel):
         async for chunk in stream:
             for raw in _translate_streaming_chunk(chunk):
                 yield raw
+
+    # ----- token counting ---------------------------------------------------
+
+    def _normalize_for_count(
+        self,
+        messages: list[TokiMessage | dict],
+        tools: ToolsArg,
+    ) -> tuple[list[dict], list[dict] | None]:
+        """Normalize messages + tools into the OpenAI-style wire shape that
+        `litellm.token_counter` and friends expect."""
+        normalized = [TokiMessage.from_dict(m) for m in messages]
+        wire_tools, _ = _unwrap_tools(tools)
+        wire_messages = [_msg_to_wire(m) for m in normalized]
+        return wire_messages, wire_tools
+
+    def _litellm_offline_count(
+        self,
+        wire_messages: list[dict],
+        wire_tools: list[dict] | None,
+    ) -> int:
+        """Run `litellm.token_counter` (no network) over the wire prompt."""
+        return litellm.token_counter(
+            model=self._wire_model,
+            messages=wire_messages,
+            tools=wire_tools,
+        )
+
+    def _litellm_online_count(
+        self,
+        wire_messages: list[dict],
+        wire_tools: list[dict] | None,
+    ) -> int:
+        """Issue a `max_tokens=1` completion and read `usage.prompt_tokens` off
+        the response. Costs the prompt + one output token per call but is the
+        only path that produces a guaranteed-exact count across litellm's
+        Anthropic / Gemini routes — both of which have buggy or missing
+        `count_tokens` paths for prompts containing tools or system messages.
+        See https://github.com/BerriAI/litellm/issues/26324 for the Anthropic
+        case and the Gemini AI Studio limitation that `count_tokens` accepts
+        only `contents` (no `tools`, no `system_instruction`).
+        """
+        kwargs: dict = {"max_tokens": 1}
+        if wire_tools:
+            kwargs["tools"] = wire_tools
+            kwargs.setdefault("parallel_tool_calls", self.allow_parallel_tool_calls)
+        response = litellm.completion(
+            model=self._wire_model,
+            api_key=self.api_key,
+            messages=wire_messages,
+            stream=False,
+            **kwargs,
+        )
+        return _prompt_tokens_from_response(response)
+
+    async def _litellm_online_count_async(
+        self,
+        wire_messages: list[dict],
+        wire_tools: list[dict] | None,
+    ) -> int:
+        kwargs: dict = {"max_tokens": 1}
+        if wire_tools:
+            kwargs["tools"] = wire_tools
+            kwargs.setdefault("parallel_tool_calls", self.allow_parallel_tool_calls)
+        response = await litellm.acompletion(
+            model=self._wire_model,
+            api_key=self.api_key,
+            messages=wire_messages,
+            stream=False,
+            **kwargs,
+        )
+        return _prompt_tokens_from_response(response)
+
+    @staticmethod
+    def _wrap_estimate(raw: int, safety_factor: float) -> TokenCountEstimate:
+        return TokenCountEstimate(
+            prompt_tokens=round(raw * safety_factor),
+            raw_prompt_tokens=raw,
+            safety_factor=safety_factor,
+        )
+
+
+def _prompt_tokens_from_response(response: Any) -> int:
+    usage = _attr(response, 'usage', None)
+    pt = _attr(usage, 'prompt_tokens', None) if usage is not None else None
+    if pt is None:
+        raise RuntimeError(
+            f"litellm completion response did not include usage.prompt_tokens "
+            f"(needed for online-count via max_tokens=1 generation): {response!r}"
+        )
+    return int(pt)
+
+
+def _run_async_blocking(coro_factory) -> Any:
+    """Run an async coroutine to completion synchronously, regardless of whether
+    the caller is already inside an event loop. Always uses a fresh thread + loop:
+    litellm caches httpx clients per-loop, so stuffing a new `asyncio.run` into
+    a foreign loop is a footgun.
+
+    `coro_factory` is a zero-arg callable that returns the coroutine — needed
+    because the coroutine has to be created on the worker thread's loop.
+    """
+    holder: dict = {}
+
+    def runner() -> None:
+        try:
+            holder['ok'] = asyncio.run(coro_factory())
+        except BaseException as e:
+            holder['err'] = e
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join()
+    if 'err' in holder:
+        raise holder['err']
+    return holder['ok']
 
 
 def _build_turn_from_response(response: Any, *, capture_thinking: bool) -> _RawTurn:

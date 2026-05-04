@@ -359,6 +359,58 @@ For native Google: cache creation goes through `client.caches.create()` (or `cli
 
 A note on shared models across concurrent agents: `_CacheState` lives on the model instance, so sharing one strategy-bearing model across multiple `Agent`s with diverging histories will thrash the cache (each agent's prefix invalidates the other's anchor). Use one model per long-running agent.
 
+## Token counting
+
+Every backend implements `count_tokens(messages, *, tools=None, kind='exact')` (and `acount_tokens(...)` for the async path). It returns either a plain `int` for exact counts, or a `TokenCountEstimate` (with `prompt_tokens`, `raw_prompt_tokens`, `safety_factor`) when only a heuristic was available.
+
+```python
+from toki import Agent, OpenAIModel, TokenCountEstimate, get_openai_api_key
+
+model = OpenAIModel("gpt-5.4-mini", api_key=get_openai_api_key())
+agent = Agent(model)
+agent.add_user_message("Tell me a joke about token counting.")
+
+n = model.count_tokens(agent.messages)
+print(n)                        # 14  (plain int — exact)
+isinstance(n, TokenCountEstimate)  # False
+```
+
+For backends that can only estimate, the safety-factor multiplier is already baked into `prompt_tokens` so the figure is directly usable as a budget; `raw_prompt_tokens` is the underlying estimator's actual output.
+
+```python
+result = anthropic_model.count_tokens(messages, kind='offline')
+# TokenCountEstimate(prompt_tokens=1184, raw_prompt_tokens=1029, safety_factor=1.15)
+```
+
+### `kind` and per-backend support
+
+The abstract `kind` parameter only advertises `'exact'`. Backends widen the `Literal` to expose any additional modes they support:
+
+- `exact` — backend's most-accurate available path. Default. Always runnable.
+- `offline` — pure-local computation, no network. Returns `TokenCountEstimate`.
+- `online` — explicit provider round-trip. Same result as `'exact'` on the hosted backends, exposed as a separate value so callers can be explicit about cost/latency intent.
+
+Backends raise `ValueError` for an unsupported `kind`. The `safety_factor` kwarg only exists on backends that can return an estimate; it defaults to `1.15` and only applies on the offline path.
+
+| Backend | `'exact'` (default) | `'offline'` | `'online'` |
+|---|---|---|---|
+| `LocalModel` | exact via `tokenizer.apply_chat_template(...)` | (raises) | (raises) |
+| `OllamaModel` | exact via daemon's `prompt_eval_count` (round-trip to localhost) | (raises) | (raises) |
+| `OpenAIModel` | exact via `litellm.token_counter` (tiktoken — exact for OpenAI) | (raises) | (raises) |
+| `AnthropicModel` | exact, online via a `max_tokens=1` chat completion (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
+| `GoogleModel` | exact, online via a `max_tokens=1` chat completion (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
+| `OpenRouterModel` | exact, online via a `max_tokens=1` `chat/completions` round-trip (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` keyed off the upstream model id | same as `'exact'` |
+
+Notes:
+- The Ollama path treats the daemon's `prompt_eval_count` as exact since the typical setup runs the daemon on the same machine as the caller. It still requires the daemon to be reachable.
+- `OpenRouterModel`'s offline path is opt-in: it imports `litellm` lazily and raises `ImportError("install toki[litellm]")` if it's not available, so the `[openrouter]` extra stays lightweight.
+- For `LocalModel` / `OllamaModel`, the safety-factor knob is intentionally absent — there's no estimate path to apply it to.
+- **Cost of `'exact'`/`'online'` on Anthropic / Google / OpenRouter**: the count is read from `usage.prompt_tokens` on a `max_tokens=1` chat completion, which costs the prompt + one output token per call. Each provider exposes a dedicated count-tokens endpoint, but those endpoints are inconsistent across providers and (for Anthropic and Gemini) silently mishandle prompts containing tools or system messages. Routing through a tiny generation call sidesteps both issues and yields a guaranteed-exact count. Anthropic specifically: see [litellm#26324](https://github.com/BerriAI/litellm/issues/26324) — once that bug is fixed upstream, `AnthropicModel` could switch to the cheaper endpoint.
+
+### Async sibling
+
+Every backend mirrors the sync method with `acount_tokens(...)`. The default implementation in `BaseModel` just calls the sync version, but Anthropic, Google, OpenRouter, and Ollama all override with a real async path so token counting doesn't block your event loop.
+
 ## Tools (function calling)
 
 Pass an OpenAI-style tool schema list to `Agent(model, tools=[...])`. When the model decides to call a tool:
@@ -764,9 +816,10 @@ Each handler returns the next `State` (or `END_STATE` to terminate).
 
 ## Roadmap
 
-- **More examples/case studies** basically want a larger set of examples of how toki can be used and integrated into a variety of different LLM workflows. Especially want to link cases where toki can replace an existing bespoke backend e.g. adhoc-api, etc.
-- **ReAct-style agents.** Examples — and possibly a small helper — orchestrating "thought / action / observation" loops on top of `Agent` + tools and a `StateMachine`.
-- **Tool-schema generation from Python callables.** clear examples of supporting libraries that can help converting functions to schemas for tool calling. perhaps a minimal interface or demo of the ReAct flow. Additionally, may include functionality for augmenting non-tool-supporting models with tools via a plain-text interface
+- **More examples/case studies:** basically want a larger set of examples of how toki can be used and integrated into a variety of different LLM workflows. Especially want to link cases where toki can replace an existing bespoke backend e.g. adhoc-api, etc.
+- **ReAct-style agents:** Examples — and possibly a small helper — orchestrating "thought / action / observation" loops on top of `Agent` + tools and a `StateMachine`.
+- **Tool-schema generation from Python callables:** clear examples of supporting libraries that can help converting functions to schemas for tool calling. perhaps a minimal interface or demo of the ReAct flow. Additionally, may include functionality for augmenting non-tool-supporting models with tools via a plain-text interface
+- **Multi-modal Input/Output:** support for models that can take different kinds of data as input or output. It will be tricky unifying this with the current text-centric approach and interface types
 
 ## Development
 - Python ≥ 3.10

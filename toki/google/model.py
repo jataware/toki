@@ -4,8 +4,11 @@ from typing import Literal
 
 from ..helpers.cache_state import _CacheState, estimate_messages_tokens
 from ..litellm.model import ReasoningEffort, _LiteLLMModel
-from ..model import TokiMessage
+from ..model import TokenCountEstimate, TokiMessage, ToolsArg
 from .models import GoogleModelName
+
+
+_GOOGLE_OFFLINE_SAFETY_FACTOR_DEFAULT = 1.15
 
 
 # Default knobs for explicit-cache behavior. Gemini 3 Pro requires a 4096-token
@@ -287,6 +290,63 @@ class GoogleModel(_LiteLLMModel):
         """Drop the historical anchor list. Next `'static'` call snapshots
         from scratch; rolling immediately recreates a fresh cache."""
         self._cache_manager.state.clear()
+
+    def count_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact', 'offline', 'online'] = 'exact',
+        safety_factor: float = _GOOGLE_OFFLINE_SAFETY_FACTOR_DEFAULT,
+    ) -> int | TokenCountEstimate:
+        """Count the prompt tokens for the given messages (and tools).
+        
+        Two modes:
+
+          - `kind='exact'` / `kind='online'` — issues a
+            `max_tokens=1` chat completion via litellm and reads
+            `usage.prompt_tokens` off the response. Returns a plain `int`
+            equal to the number Gemini would charge. Costs the prompt +
+            one output token per call. (Gemini ships a dedicated
+            `count_tokens` endpoint, but on AI Studio it accepts only
+            `contents` — no `tools`, no `system_instruction` — so toki
+            uniformly routes through a generation call instead.)
+          - `kind='offline'` — runs `litellm.token_counter` locally and
+            wraps the heuristic count in a `TokenCountEstimate`
+            (`prompt_tokens`, `raw_prompt_tokens`, `safety_factor`). Google
+            doesn't ship an official offline tokenizer; `safety_factor`
+            (default 1.15) multiplies the raw count to give a budget-safe
+            figure.
+
+        Any other `kind` value raises `ValueError`. `safety_factor` only
+        applies on the offline path.
+        """
+        if kind not in ('exact', 'offline', 'online'):
+            raise ValueError(f"GoogleModel.count_tokens: unsupported kind {kind!r}")
+        wire_messages, wire_tools = self._normalize_for_count(messages, tools)
+        if kind == 'offline':
+            raw = self._litellm_offline_count(wire_messages, wire_tools)
+            return self._wrap_estimate(raw, safety_factor)
+        return self._litellm_online_count(wire_messages, wire_tools)
+
+    async def acount_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact', 'offline', 'online'] = 'exact',
+        safety_factor: float = _GOOGLE_OFFLINE_SAFETY_FACTOR_DEFAULT,
+    ) -> int | TokenCountEstimate:
+        """Async sibling of `count_tokens`. Same behavior; the online path
+        uses `litellm.acompletion` so it doesn't block the event loop. The
+        offline path is pure-CPU work and runs inline."""
+        if kind not in ('exact', 'offline', 'online'):
+            raise ValueError(f"GoogleModel.acount_tokens: unsupported kind {kind!r}")
+        wire_messages, wire_tools = self._normalize_for_count(messages, tools)
+        if kind == 'offline':
+            raw = self._litellm_offline_count(wire_messages, wire_tools)
+            return self._wrap_estimate(raw, safety_factor)
+        return await self._litellm_online_count_async(wire_messages, wire_tools)
 
     def _post_cache_kwargs(self, tail: list[TokiMessage], cache_name: str, kwargs: dict) -> tuple[list[dict], dict]:
         """Build the live request shape after a successful cache resolution:
