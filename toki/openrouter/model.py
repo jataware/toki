@@ -10,17 +10,23 @@ from ..anthropic.utils import _with_text_cache_marker, apply_cache_markers, buil
 from ..helpers.cache_state import _CacheState, estimate_messages_tokens
 from ..model import (
     BaseModel,
+    TokenCountEstimate,
     TokiMessage,
     TokiToolCall,
     TokiUsageMetadata,
+    ToolsArg,
     _RawChunk,
     _RawContentChunk,
     _RawThoughtChunk,
     _RawToolCallChunk,
     _RawTurn,
     _RawUsage,
+    _unwrap_tools,
 )
 from .models import OpenRouterModelName
+
+
+_OPENROUTER_OFFLINE_SAFETY_FACTOR_DEFAULT = 1.15
 
 
 # OpenRouter (like Anthropic) requires the cacheable prefix to clear ~1024
@@ -154,6 +160,63 @@ class OpenRouterModel(BaseModel):
         """Drop the historical anchor list. Next `'static'` call will defer
         until the prefix is large enough and snapshot afresh."""
         self._cache_state.clear()
+
+    # ----- token counting ---------------------------------------------------
+
+    def count_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact', 'offline', 'online'] = 'exact',
+        safety_factor: float = _OPENROUTER_OFFLINE_SAFETY_FACTOR_DEFAULT,
+    ) -> int | TokenCountEstimate:
+        if kind not in ('exact', 'offline', 'online'):
+            raise ValueError(f"OpenRouterModel.count_tokens: unsupported kind {kind!r}")
+        normalized = [TokiMessage.from_dict(m) for m in messages]
+        wire_tools, _streaming = _unwrap_tools(tools)
+        wire_messages = [_msg_to_wire(m) for m in normalized]
+        if kind == 'offline':
+            raw = _openrouter_offline_count(self.model, wire_messages, wire_tools)
+            return TokenCountEstimate(
+                prompt_tokens=round(raw * safety_factor),
+                raw_prompt_tokens=raw,
+                safety_factor=safety_factor,
+            )
+        # exact / online: round-trip a max_tokens=1 chat call and read usage.prompt_tokens
+        payload = _build_count_payload(self.model, wire_messages, wire_tools)
+        with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            r = client.post(_API_URL, headers=self._headers(stream=False), json=payload)
+            r.raise_for_status()
+            data = r.json()
+        return _prompt_tokens_from_count_response(data)
+
+    async def acount_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact', 'offline', 'online'] = 'exact',
+        safety_factor: float = _OPENROUTER_OFFLINE_SAFETY_FACTOR_DEFAULT,
+    ) -> int | TokenCountEstimate:
+        if kind not in ('exact', 'offline', 'online'):
+            raise ValueError(f"OpenRouterModel.acount_tokens: unsupported kind {kind!r}")
+        normalized = [TokiMessage.from_dict(m) for m in messages]
+        wire_tools, _streaming = _unwrap_tools(tools)
+        wire_messages = [_msg_to_wire(m) for m in normalized]
+        if kind == 'offline':
+            raw = _openrouter_offline_count(self.model, wire_messages, wire_tools)
+            return TokenCountEstimate(
+                prompt_tokens=round(raw * safety_factor),
+                raw_prompt_tokens=raw,
+                safety_factor=safety_factor,
+            )
+        payload = _build_count_payload(self.model, wire_messages, wire_tools)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            r = await client.post(_API_URL, headers=self._headers(stream=False), json=payload)
+            r.raise_for_status()
+            data = r.json()
+        return _prompt_tokens_from_count_response(data)
 
     def _cache_route(self) -> Literal['anthropic', 'google'] | None:
         if self.model.startswith('anthropic/'):
@@ -391,6 +454,45 @@ def _tool_call_chunk_from_delta(tc_delta: dict) -> _RawToolCallChunk:
         name=name,
         arguments_fragment=arguments_fragment if arguments_fragment else None,
     )
+
+
+def _openrouter_offline_count(model: str, wire_messages: list[dict], wire_tools: list[dict] | None) -> int:
+    """Heuristic offline token count for an OpenRouter call. Routed through
+    `litellm.token_counter` keyed off the upstream model id (e.g.
+    `'anthropic/claude-haiku-4-5'`); raises `ImportError` if litellm is not
+    importable so the caller can guide the user to `toki[litellm]`.
+    """
+    try:
+        import litellm
+    except ImportError as e:
+        raise ImportError(
+            "OpenRouterModel.count_tokens(kind='offline') requires litellm. "
+            "Install with `pip install toki[litellm]` (or `toki[all]`)."
+        ) from e
+    return litellm.token_counter(model=model, messages=wire_messages, tools=wire_tools)
+
+
+def _build_count_payload(model: str, wire_messages: list[dict], wire_tools: list[dict] | None) -> dict:
+    """Minimal `/chat/completions` payload that asks for one output token, used
+    purely to read `usage.prompt_tokens` off the response."""
+    payload: dict = {
+        "model": model,
+        "messages": wire_messages,
+        "max_tokens": 1,
+    }
+    if wire_tools:
+        payload["tools"] = wire_tools
+    return payload
+
+
+def _prompt_tokens_from_count_response(data: Any) -> int:
+    if isinstance(data, dict) and 'error' in data:
+        raise ValueError(f"Error from OpenRouter: {data}")
+    usage = (data or {}).get('usage') or {}
+    pt = usage.get('prompt_tokens')
+    if pt is None:
+        raise RuntimeError(f"OpenRouter response did not include usage.prompt_tokens: {data!r}")
+    return int(pt)
 
 
 # TODO: make wrapper class around OpenRouterModel that interfaces with tools, but as strings rather than via the openrouter API

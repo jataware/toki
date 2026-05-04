@@ -4,8 +4,11 @@ from typing import Literal
 
 from ..helpers.cache_state import _CacheState, estimate_messages_tokens
 from ..litellm.model import ReasoningEffort, _LiteLLMModel
-from ..model import TokiMessage
+from ..model import TokenCountEstimate, TokiMessage, ToolsArg
 from .models import GoogleModelName
+
+
+_GOOGLE_OFFLINE_SAFETY_FACTOR_DEFAULT = 1.15
 
 
 # Default knobs for explicit-cache behavior. Gemini 3 Pro requires a 4096-token
@@ -287,6 +290,94 @@ class GoogleModel(_LiteLLMModel):
         """Drop the historical anchor list. Next `'static'` call snapshots
         from scratch; rolling immediately recreates a fresh cache."""
         self._cache_manager.state.clear()
+
+    def count_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact', 'offline', 'online'] = 'exact',
+        safety_factor: float = _GOOGLE_OFFLINE_SAFETY_FACTOR_DEFAULT,
+    ) -> int | TokenCountEstimate:
+        if kind not in ('exact', 'offline', 'online'):
+            raise ValueError(f"GoogleModel.count_tokens: unsupported kind {kind!r}")
+        wire_messages, wire_tools = self._normalize_for_count(messages, tools)
+        if kind == 'offline' or self._must_fall_back_to_offline(wire_tools):
+            raw = self._litellm_offline_count(wire_messages, wire_tools)
+            return self._wrap_estimate(raw, safety_factor)
+        return self._genai_count_tokens_sync(messages, wire_tools)
+
+    async def acount_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact', 'offline', 'online'] = 'exact',
+        safety_factor: float = _GOOGLE_OFFLINE_SAFETY_FACTOR_DEFAULT,
+    ) -> int | TokenCountEstimate:
+        if kind not in ('exact', 'offline', 'online'):
+            raise ValueError(f"GoogleModel.acount_tokens: unsupported kind {kind!r}")
+        wire_messages, wire_tools = self._normalize_for_count(messages, tools)
+        if kind == 'offline' or self._must_fall_back_to_offline(wire_tools):
+            raw = self._litellm_offline_count(wire_messages, wire_tools)
+            return self._wrap_estimate(raw, safety_factor)
+        return await self._genai_count_tokens_async(messages, wire_tools)
+
+    @staticmethod
+    def _must_fall_back_to_offline(wire_tools: list[dict] | None) -> bool:
+        """Gemini's `count_tokens` endpoint on AI Studio hard-rejects any
+        `tools` payload (`'tools parameter is not supported in Gemini API.'`).
+        When tools are present, fall back to the offline estimator and warn so
+        the caller knows they got an estimate instead of an exact count."""
+        if not wire_tools:
+            return False
+        warnings.warn(
+            "GoogleModel.count_tokens: Gemini API's count_tokens endpoint does not support "
+            "tools; falling back to the offline estimate (TokenCountEstimate). Pass "
+            "kind='offline' explicitly to suppress this warning.",
+            stacklevel=3,
+        )
+        return True
+
+    def _genai_count_tokens_sync(
+        self,
+        messages: list[TokiMessage | dict],
+        wire_tools: list[dict] | None,
+    ) -> int:
+        normalized = [TokiMessage.from_dict(m) for m in messages]
+        system, contents = _toki_messages_to_genai(normalized)
+        client = self._cache_manager._ensure_client()
+        config: dict = {}
+        if system:
+            config["system_instruction"] = system
+        genai_tools = _wire_tools_to_genai(wire_tools)
+        if genai_tools:
+            config["tools"] = genai_tools
+        kwargs: dict = {"model": f"models/{self.model}", "contents": contents}
+        if config:
+            kwargs["config"] = config
+        result = client.models.count_tokens(**kwargs)
+        return result.total_tokens
+
+    async def _genai_count_tokens_async(
+        self,
+        messages: list[TokiMessage | dict],
+        wire_tools: list[dict] | None,
+    ) -> int:
+        normalized = [TokiMessage.from_dict(m) for m in messages]
+        system, contents = _toki_messages_to_genai(normalized)
+        client = self._cache_manager._ensure_client()
+        config: dict = {}
+        if system:
+            config["system_instruction"] = system
+        genai_tools = _wire_tools_to_genai(wire_tools)
+        if genai_tools:
+            config["tools"] = genai_tools
+        kwargs: dict = {"model": f"models/{self.model}", "contents": contents}
+        if config:
+            kwargs["config"] = config
+        result = await client.aio.models.count_tokens(**kwargs)
+        return result.total_tokens
 
     def _post_cache_kwargs(self, tail: list[TokiMessage], cache_name: str, kwargs: dict) -> tuple[list[dict], dict]:
         """Build the live request shape after a successful cache resolution:

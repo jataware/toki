@@ -74,6 +74,18 @@ class TokiUsageMetadata:
     total_tokens: int
 
 
+@dataclass
+class TokenCountEstimate:
+    """Returned by `count_tokens(kind='offline')` (or any path that can't produce
+    an exact count). `prompt_tokens` is the post-safety-factor figure callers
+    should budget against; `raw_prompt_tokens` is what the underlying estimator
+    actually returned, and `safety_factor` is the multiplier already applied.
+    """
+    prompt_tokens: int
+    raw_prompt_tokens: int
+    safety_factor: float
+
+
 # --- Tool-schema wrappers ----------------------------------------------------
 
 @dataclass
@@ -736,6 +748,17 @@ class _AsyncStreamDriver:
 
 # --- Schema helpers ----------------------------------------------------------
 
+# Shared `tools=` annotation used by `complete()` / `acomplete()` overloads and
+# by every backend's `count_tokens` / `acount_tokens`. Mirrors the four shapes
+# the overload table covers (none, all-streaming, all-static, mixed).
+ToolsArg = (
+    Sequence[StreamingToolSchema]
+    | Sequence[ToolSchema | dict]
+    | Sequence[StreamingToolSchema | ToolSchema | dict]
+    | None
+)
+
+
 def _unwrap_tools(tools: Sequence | None) -> tuple[list[dict] | None, set[str]]:
     """Translate a list of `ToolSchema` / `StreamingToolSchema` / raw dicts into a
     plain `list[dict]` (the wire format) and the set of streaming-tool names.
@@ -818,6 +841,37 @@ class BaseModel(ABC):
         capture_thinking: bool,
         **kwargs,
     ) -> AsyncIterator[_RawChunk]: ...
+
+    # ----- token counting ----------------------------------------------------
+
+    @abstractmethod
+    def count_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact'] = 'exact',
+    ) -> int | TokenCountEstimate:
+        """Count the prompt tokens for the given messages (and tools).
+
+        Returns a plain `int` for exact counts and a `TokenCountEstimate` for
+        backends that can only estimate (e.g. an offline path that runs a
+        heuristic tokenizer). The abstract signature only advertises
+        `kind='exact'`; backends widen the literal to expose any additional
+        modes (`'offline'`, `'online'`) they support.
+        """
+        ...
+
+    async def acount_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact'] = 'exact',
+    ) -> int | TokenCountEstimate:
+        """Async sibling of `count_tokens`. Default implementation just calls
+        the sync version; backends with a real async path override."""
+        return self.count_tokens(messages, tools=tools, kind=kind)
 
     # ----- public `complete` overloads ---------------------------------------
 

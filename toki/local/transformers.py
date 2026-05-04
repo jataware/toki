@@ -14,12 +14,14 @@ from ..model import (
     TokiToolCall,
     TokiToolFunction,
     TokiUsageMetadata,
+    ToolsArg,
     _RawChunk,
     _RawContentChunk,
     _RawThoughtChunk,
     _RawToolCallChunk,
     _RawTurn,
     _RawUsage,
+    _unwrap_tools,
 )
 
 
@@ -246,6 +248,25 @@ class LocalModel(BaseModel):
         self._model = AutoModelForCausalLM.from_pretrained(model, torch_dtype="auto")
         self._model.to(self.device)
         self._model.eval()
+
+    def count_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact'] = 'exact',
+    ) -> int:
+        if kind != 'exact':
+            raise ValueError(f"LocalModel only supports kind='exact'; got {kind!r}")
+        normalized = [TokiMessage.from_dict(m) for m in messages]
+        wire_tools, _ = _unwrap_tools(tools)
+        # mirror what `_raw_blocking` does: render the chat template to text first,
+        # then tokenize. `apply_chat_template(tokenize=True, ...)` returns a
+        # `BatchEncoding` (whose `len` is the number of fields, not the token
+        # count) on fast tokenizers, so going through the prompt-string path is
+        # both more portable and exactly consistent with the eventual generation call.
+        prompt = self._build_prompt(normalized, tools=wire_tools)
+        return len(self.tokenizer.encode(prompt))
 
     def _raw_blocking(
         self,

@@ -58,6 +58,10 @@ class _FakeAsyncModel(BaseModel):
             await asyncio.sleep(0)  # yield to the loop between chunks
             yield c
 
+    def count_tokens(self, messages, *, tools=None, kind="exact"):
+        # not exercised by these tests; trivial implementation for the abstract slot
+        return 0
+
 
 def _msg() -> list[dict]:
     return [{"role": "user", "content": "hi"}]

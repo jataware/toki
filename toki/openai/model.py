@@ -1,4 +1,7 @@
+from typing import Literal
+
 from ..litellm.model import ReasoningEffort, _LiteLLMModel
+from ..model import TokiMessage, ToolsArg
 from .models import OpenAIModelName
 
 
@@ -25,3 +28,15 @@ class OpenAIModel(_LiteLLMModel):
             allow_parallel_tool_calls=allow_parallel_tool_calls,
         )
         self.model = model
+
+    def count_tokens(
+        self,
+        messages: list[TokiMessage | dict],
+        *,
+        tools: ToolsArg = None,
+        kind: Literal['exact'] = 'exact',
+    ) -> int:
+        if kind != 'exact':
+            raise ValueError(f"OpenAIModel only supports kind='exact'; got {kind!r}")
+        wire_messages, wire_tools = self._normalize_for_count(messages, tools)
+        return self._litellm_offline_count(wire_messages, wire_tools)
