@@ -816,9 +816,10 @@ Each handler returns the next `State` (or `END_STATE` to terminate).
 
 ## Roadmap
 
-- **More examples/case studies** basically want a larger set of examples of how toki can be used and integrated into a variety of different LLM workflows. Especially want to link cases where toki can replace an existing bespoke backend e.g. adhoc-api, etc.
-- **ReAct-style agents.** Examples — and possibly a small helper — orchestrating "thought / action / observation" loops on top of `Agent` + tools and a `StateMachine`.
-- **Tool-schema generation from Python callables.** clear examples of supporting libraries that can help converting functions to schemas for tool calling. perhaps a minimal interface or demo of the ReAct flow. Additionally, may include functionality for augmenting non-tool-supporting models with tools via a plain-text interface
+- **More examples/case studies:** basically want a larger set of examples of how toki can be used and integrated into a variety of different LLM workflows. Especially want to link cases where toki can replace an existing bespoke backend e.g. adhoc-api, etc.
+- **ReAct-style agents:** Examples — and possibly a small helper — orchestrating "thought / action / observation" loops on top of `Agent` + tools and a `StateMachine`.
+- **Tool-schema generation from Python callables:** clear examples of supporting libraries that can help converting functions to schemas for tool calling. perhaps a minimal interface or demo of the ReAct flow. Additionally, may include functionality for augmenting non-tool-supporting models with tools via a plain-text interface
+- **Multi-modal Input/Output:** support for models that can take different kinds of data as input or output. It will be tricky unifying this with the current text-centric approach and interface types
 
 ## Development
 - Python ≥ 3.10
