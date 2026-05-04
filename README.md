@@ -397,15 +397,15 @@ Backends raise `ValueError` for an unsupported `kind`. The `safety_factor` kwarg
 | `LocalModel` | exact via `tokenizer.apply_chat_template(...)` | (raises) | (raises) |
 | `OllamaModel` | exact via daemon's `prompt_eval_count` (round-trip to localhost) | (raises) | (raises) |
 | `OpenAIModel` | exact via `litellm.token_counter` (tiktoken — exact for OpenAI) | (raises) | (raises) |
-| `AnthropicModel` | exact, online via Anthropic's count-tokens endpoint | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
-| `GoogleModel` | exact, online via `google-genai` `client.models.count_tokens(...)` | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
+| `AnthropicModel` | exact, online via a `max_tokens=1` chat completion (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
+| `GoogleModel` | exact, online via a `max_tokens=1` chat completion (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
 | `OpenRouterModel` | exact, online via a `max_tokens=1` `chat/completions` round-trip (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` keyed off the upstream model id | same as `'exact'` |
 
 Notes:
 - The Ollama path treats the daemon's `prompt_eval_count` as exact since the typical setup runs the daemon on the same machine as the caller. It still requires the daemon to be reachable.
 - `OpenRouterModel`'s offline path is opt-in: it imports `litellm` lazily and raises `ImportError("install toki[litellm]")` if it's not available, so the `[openrouter]` extra stays lightweight.
 - For `LocalModel` / `OllamaModel`, the safety-factor knob is intentionally absent — there's no estimate path to apply it to.
-- **`GoogleModel` + tools**: AI Studio's `count_tokens` endpoint does not accept a `tools=` payload. When tools are passed in `'exact'` / `'online'` mode, toki emits a `UserWarning` and falls back to the offline estimate (`TokenCountEstimate`). For an exact-shaped result with tools, run on Vertex AI (not currently a toki backend) or accept the estimate.
+- **Cost of `'exact'`/`'online'` on Anthropic / Google / OpenRouter**: the count is read from `usage.prompt_tokens` on a `max_tokens=1` chat completion, which costs the prompt + one output token per call. Each provider exposes a dedicated count-tokens endpoint, but those endpoints are inconsistent across providers and (for Anthropic and Gemini) silently mishandle prompts containing tools or system messages. Routing through a tiny generation call sidesteps both issues and yields a guaranteed-exact count. Anthropic specifically: see [litellm#26324](https://github.com/BerriAI/litellm/issues/26324) — once that bug is fixed upstream, `AnthropicModel` could switch to the cheaper endpoint.
 
 ### Async sibling
 

@@ -171,6 +171,31 @@ class OpenRouterModel(BaseModel):
         kind: Literal['exact', 'offline', 'online'] = 'exact',
         safety_factor: float = _OPENROUTER_OFFLINE_SAFETY_FACTOR_DEFAULT,
     ) -> int | TokenCountEstimate:
+        """
+        Count the prompt tokens for the given messages (and tools).
+
+        Two modes:
+
+          - `kind='exact'` / `kind='online'` — POSTs a
+            `max_tokens=1` `/chat/completions` request to OpenRouter and
+            reads `usage.prompt_tokens` off the response. Returns a plain
+            `int` matching what the upstream provider would charge for the
+            same prompt. Costs the prompt + one output token per call.
+            OpenRouter has no dedicated count-tokens endpoint, so this is
+            the only path that produces a guaranteed-exact figure.
+          - `kind='offline'` — runs `litellm.token_counter` keyed off the
+            upstream model id (e.g. `'anthropic/claude-haiku-4-5'`) and
+            wraps the heuristic count in a `TokenCountEstimate`
+            (`prompt_tokens`, `raw_prompt_tokens`, `safety_factor`). The
+            `litellm` import is lazy: if the package isn't installed,
+            `ImportError` is raised pointing at `toki[litellm]`. Accuracy
+            depends entirely on whether litellm has a tokenizer for the
+            chosen upstream model; `safety_factor` (default 1.15) gives a
+            budget-safe multiplier on top.
+
+        Any other `kind` value raises `ValueError`. `safety_factor` only
+        applies on the offline path.
+        """
         if kind not in ('exact', 'offline', 'online'):
             raise ValueError(f"OpenRouterModel.count_tokens: unsupported kind {kind!r}")
         normalized = [TokiMessage.from_dict(m) for m in messages]
@@ -183,7 +208,6 @@ class OpenRouterModel(BaseModel):
                 raw_prompt_tokens=raw,
                 safety_factor=safety_factor,
             )
-        # exact / online: round-trip a max_tokens=1 chat call and read usage.prompt_tokens
         payload = _build_count_payload(self.model, wire_messages, wire_tools)
         with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
             r = client.post(_API_URL, headers=self._headers(stream=False), json=payload)
@@ -199,6 +223,9 @@ class OpenRouterModel(BaseModel):
         kind: Literal['exact', 'offline', 'online'] = 'exact',
         safety_factor: float = _OPENROUTER_OFFLINE_SAFETY_FACTOR_DEFAULT,
     ) -> int | TokenCountEstimate:
+        """Async sibling of `count_tokens`. Same behavior; the online path
+        uses `httpx.AsyncClient` so it doesn't block the event loop. The
+        offline path is pure-CPU work and runs inline."""
         if kind not in ('exact', 'offline', 'online'):
             raise ValueError(f"OpenRouterModel.acount_tokens: unsupported kind {kind!r}")
         normalized = [TokiMessage.from_dict(m) for m in messages]

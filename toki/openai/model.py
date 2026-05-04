@@ -36,6 +36,17 @@ class OpenAIModel(_LiteLLMModel):
         tools: ToolsArg = None,
         kind: Literal['exact'] = 'exact',
     ) -> int:
+        """
+        Count the prompt tokens for the given messages (and tools).
+        
+        Produces the EXACT prompt-token count for the OpenAI wire payload, computed
+        purely offline via `litellm.token_counter` (which routes to `tiktoken`
+        for OpenAI models). No network round-trip.
+
+        Only `kind='exact'` is exposed; passing any other value raises
+        `ValueError`. There is no `'offline'` / `'online'` distinction because
+        tiktoken is already exact and offline.
+        """
         if kind != 'exact':
             raise ValueError(f"OpenAIModel only supports kind='exact'; got {kind!r}")
         wire_messages, wire_tools = self._normalize_for_count(messages, tools)

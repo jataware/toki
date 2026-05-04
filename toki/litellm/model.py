@@ -226,6 +226,51 @@ class _LiteLLMModel(BaseModel):
             tools=wire_tools,
         )
 
+    def _litellm_online_count(
+        self,
+        wire_messages: list[dict],
+        wire_tools: list[dict] | None,
+    ) -> int:
+        """Issue a `max_tokens=1` completion and read `usage.prompt_tokens` off
+        the response. Costs the prompt + one output token per call but is the
+        only path that produces a guaranteed-exact count across litellm's
+        Anthropic / Gemini routes — both of which have buggy or missing
+        `count_tokens` paths for prompts containing tools or system messages.
+        See https://github.com/BerriAI/litellm/issues/26324 for the Anthropic
+        case and the Gemini AI Studio limitation that `count_tokens` accepts
+        only `contents` (no `tools`, no `system_instruction`).
+        """
+        kwargs: dict = {"max_tokens": 1}
+        if wire_tools:
+            kwargs["tools"] = wire_tools
+            kwargs.setdefault("parallel_tool_calls", self.allow_parallel_tool_calls)
+        response = litellm.completion(
+            model=self._wire_model,
+            api_key=self.api_key,
+            messages=wire_messages,
+            stream=False,
+            **kwargs,
+        )
+        return _prompt_tokens_from_response(response)
+
+    async def _litellm_online_count_async(
+        self,
+        wire_messages: list[dict],
+        wire_tools: list[dict] | None,
+    ) -> int:
+        kwargs: dict = {"max_tokens": 1}
+        if wire_tools:
+            kwargs["tools"] = wire_tools
+            kwargs.setdefault("parallel_tool_calls", self.allow_parallel_tool_calls)
+        response = await litellm.acompletion(
+            model=self._wire_model,
+            api_key=self.api_key,
+            messages=wire_messages,
+            stream=False,
+            **kwargs,
+        )
+        return _prompt_tokens_from_response(response)
+
     @staticmethod
     def _wrap_estimate(raw: int, safety_factor: float) -> TokenCountEstimate:
         return TokenCountEstimate(
@@ -233,6 +278,17 @@ class _LiteLLMModel(BaseModel):
             raw_prompt_tokens=raw,
             safety_factor=safety_factor,
         )
+
+
+def _prompt_tokens_from_response(response: Any) -> int:
+    usage = _attr(response, 'usage', None)
+    pt = _attr(usage, 'prompt_tokens', None) if usage is not None else None
+    if pt is None:
+        raise RuntimeError(
+            f"litellm completion response did not include usage.prompt_tokens "
+            f"(needed for online-count via max_tokens=1 generation): {response!r}"
+        )
+    return int(pt)
 
 
 def _run_async_blocking(coro_factory) -> Any:

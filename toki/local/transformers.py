@@ -256,6 +256,19 @@ class LocalModel(BaseModel):
         tools: ToolsArg = None,
         kind: Literal['exact'] = 'exact',
     ) -> int:
+        """
+        Count the prompt tokens for the given messages (and tools).
+
+        Produces the EXACT prompt-token count, computed by rendering the same chat
+        template `_raw_blocking` will use and running the result through
+        `self.tokenizer.encode(...)`. Fully local and deterministic; the
+        returned `int` is exactly the number of tokens the model will see
+        if you run a generation on the same `messages` + `tools`.
+
+        Only `kind='exact'` is exposed; passing any other value raises
+        `ValueError`. There is no `'offline'` / `'online'` distinction
+        because everything happens in-process.
+        """
         if kind != 'exact':
             raise ValueError(f"LocalModel only supports kind='exact'; got {kind!r}")
         normalized = [TokiMessage.from_dict(m) for m in messages]

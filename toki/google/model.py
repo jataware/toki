@@ -299,13 +299,35 @@ class GoogleModel(_LiteLLMModel):
         kind: Literal['exact', 'offline', 'online'] = 'exact',
         safety_factor: float = _GOOGLE_OFFLINE_SAFETY_FACTOR_DEFAULT,
     ) -> int | TokenCountEstimate:
+        """Count the prompt tokens for the given messages (and tools).
+        
+        Two modes:
+
+          - `kind='exact'` / `kind='online'` — issues a
+            `max_tokens=1` chat completion via litellm and reads
+            `usage.prompt_tokens` off the response. Returns a plain `int`
+            equal to the number Gemini would charge. Costs the prompt +
+            one output token per call. (Gemini ships a dedicated
+            `count_tokens` endpoint, but on AI Studio it accepts only
+            `contents` — no `tools`, no `system_instruction` — so toki
+            uniformly routes through a generation call instead.)
+          - `kind='offline'` — runs `litellm.token_counter` locally and
+            wraps the heuristic count in a `TokenCountEstimate`
+            (`prompt_tokens`, `raw_prompt_tokens`, `safety_factor`). Google
+            doesn't ship an official offline tokenizer; `safety_factor`
+            (default 1.15) multiplies the raw count to give a budget-safe
+            figure.
+
+        Any other `kind` value raises `ValueError`. `safety_factor` only
+        applies on the offline path.
+        """
         if kind not in ('exact', 'offline', 'online'):
             raise ValueError(f"GoogleModel.count_tokens: unsupported kind {kind!r}")
         wire_messages, wire_tools = self._normalize_for_count(messages, tools)
-        if kind == 'offline' or self._must_fall_back_to_offline(wire_tools):
+        if kind == 'offline':
             raw = self._litellm_offline_count(wire_messages, wire_tools)
             return self._wrap_estimate(raw, safety_factor)
-        return self._genai_count_tokens_sync(messages, wire_tools)
+        return self._litellm_online_count(wire_messages, wire_tools)
 
     async def acount_tokens(
         self,
@@ -315,69 +337,16 @@ class GoogleModel(_LiteLLMModel):
         kind: Literal['exact', 'offline', 'online'] = 'exact',
         safety_factor: float = _GOOGLE_OFFLINE_SAFETY_FACTOR_DEFAULT,
     ) -> int | TokenCountEstimate:
+        """Async sibling of `count_tokens`. Same behavior; the online path
+        uses `litellm.acompletion` so it doesn't block the event loop. The
+        offline path is pure-CPU work and runs inline."""
         if kind not in ('exact', 'offline', 'online'):
             raise ValueError(f"GoogleModel.acount_tokens: unsupported kind {kind!r}")
         wire_messages, wire_tools = self._normalize_for_count(messages, tools)
-        if kind == 'offline' or self._must_fall_back_to_offline(wire_tools):
+        if kind == 'offline':
             raw = self._litellm_offline_count(wire_messages, wire_tools)
             return self._wrap_estimate(raw, safety_factor)
-        return await self._genai_count_tokens_async(messages, wire_tools)
-
-    @staticmethod
-    def _must_fall_back_to_offline(wire_tools: list[dict] | None) -> bool:
-        """Gemini's `count_tokens` endpoint on AI Studio hard-rejects any
-        `tools` payload (`'tools parameter is not supported in Gemini API.'`).
-        When tools are present, fall back to the offline estimator and warn so
-        the caller knows they got an estimate instead of an exact count."""
-        if not wire_tools:
-            return False
-        warnings.warn(
-            "GoogleModel.count_tokens: Gemini API's count_tokens endpoint does not support "
-            "tools; falling back to the offline estimate (TokenCountEstimate). Pass "
-            "kind='offline' explicitly to suppress this warning.",
-            stacklevel=3,
-        )
-        return True
-
-    def _genai_count_tokens_sync(
-        self,
-        messages: list[TokiMessage | dict],
-        wire_tools: list[dict] | None,
-    ) -> int:
-        normalized = [TokiMessage.from_dict(m) for m in messages]
-        system, contents = _toki_messages_to_genai(normalized)
-        client = self._cache_manager._ensure_client()
-        config: dict = {}
-        if system:
-            config["system_instruction"] = system
-        genai_tools = _wire_tools_to_genai(wire_tools)
-        if genai_tools:
-            config["tools"] = genai_tools
-        kwargs: dict = {"model": f"models/{self.model}", "contents": contents}
-        if config:
-            kwargs["config"] = config
-        result = client.models.count_tokens(**kwargs)
-        return result.total_tokens
-
-    async def _genai_count_tokens_async(
-        self,
-        messages: list[TokiMessage | dict],
-        wire_tools: list[dict] | None,
-    ) -> int:
-        normalized = [TokiMessage.from_dict(m) for m in messages]
-        system, contents = _toki_messages_to_genai(normalized)
-        client = self._cache_manager._ensure_client()
-        config: dict = {}
-        if system:
-            config["system_instruction"] = system
-        genai_tools = _wire_tools_to_genai(wire_tools)
-        if genai_tools:
-            config["tools"] = genai_tools
-        kwargs: dict = {"model": f"models/{self.model}", "contents": contents}
-        if config:
-            kwargs["config"] = config
-        result = await client.aio.models.count_tokens(**kwargs)
-        return result.total_tokens
+        return await self._litellm_online_count_async(wire_messages, wire_tools)
 
     def _post_cache_kwargs(self, tail: list[TokiMessage], cache_name: str, kwargs: dict) -> tuple[list[dict], dict]:
         """Build the live request shape after a successful cache resolution:

@@ -1,9 +1,7 @@
 from typing import Literal
 
-import litellm
-
 from ..helpers.cache_state import _CacheState, estimate_messages_tokens
-from ..litellm.model import ReasoningEffort, _LiteLLMModel, _run_async_blocking
+from ..litellm.model import ReasoningEffort, _LiteLLMModel
 from ..model import TokenCountEstimate, TokiMessage, ToolsArg
 from .models import AnthropicModelName
 from .utils import apply_cache_markers
@@ -75,20 +73,36 @@ class AnthropicModel(_LiteLLMModel):
         kind: Literal['exact', 'offline', 'online'] = 'exact',
         safety_factor: float = _ANTHROPIC_OFFLINE_SAFETY_FACTOR_DEFAULT,
     ) -> int | TokenCountEstimate:
+        """Count the prompt tokens for the given messages (and tools).
+        
+         Two modes:
+
+          - `kind='exact'` / `kind='online'` — issues a
+            `max_tokens=1` chat completion via litellm and reads
+            `usage.prompt_tokens` off the response. Returns a plain `int`
+            equal to the number Anthropic would charge. Costs the prompt +
+            one output token per call. (Anthropic ships a dedicated
+            count-tokens endpoint, but litellm's `acount_tokens` path
+            currently mishandles tools, system messages, and tool-role
+            messages — see https://github.com/BerriAI/litellm/issues/26324.
+            Routing through a tiny generation call sidesteps the bug.)
+          - `kind='offline'` — runs `litellm.token_counter` locally and
+            wraps the heuristic count in a `TokenCountEstimate`
+            (`prompt_tokens`, `raw_prompt_tokens`, `safety_factor`).
+            Anthropic ships no official offline tokenizer, so the underlying
+            estimator is approximate; `safety_factor` (default 1.15)
+            multiplies the raw count to give a budget-safe figure.
+
+        Any other `kind` value raises `ValueError`. `safety_factor` only
+        applies on the offline path.
+        """
         if kind not in ('exact', 'offline', 'online'):
             raise ValueError(f"AnthropicModel.count_tokens: unsupported kind {kind!r}")
         wire_messages, wire_tools = self._normalize_for_count(messages, tools)
         if kind == 'offline':
             raw = self._litellm_offline_count(wire_messages, wire_tools)
             return self._wrap_estimate(raw, safety_factor)
-        # exact / online both hit Anthropic's count-tokens endpoint via litellm
-        response = _run_async_blocking(lambda: litellm.acount_tokens(
-            model=self._wire_model,
-            messages=wire_messages,
-            tools=wire_tools,
-            api_key=self.api_key,
-        ))
-        return response.total_tokens
+        return self._litellm_online_count(wire_messages, wire_tools)
 
     async def acount_tokens(
         self,
@@ -98,19 +112,16 @@ class AnthropicModel(_LiteLLMModel):
         kind: Literal['exact', 'offline', 'online'] = 'exact',
         safety_factor: float = _ANTHROPIC_OFFLINE_SAFETY_FACTOR_DEFAULT,
     ) -> int | TokenCountEstimate:
+        """Async sibling of `count_tokens`. Same behavior; the online path
+        uses `litellm.acompletion` so it doesn't block the event loop. The
+        offline path is pure-CPU work and runs inline."""
         if kind not in ('exact', 'offline', 'online'):
             raise ValueError(f"AnthropicModel.acount_tokens: unsupported kind {kind!r}")
         wire_messages, wire_tools = self._normalize_for_count(messages, tools)
         if kind == 'offline':
             raw = self._litellm_offline_count(wire_messages, wire_tools)
             return self._wrap_estimate(raw, safety_factor)
-        response = await litellm.acount_tokens(
-            model=self._wire_model,
-            messages=wire_messages,
-            tools=wire_tools,
-            api_key=self.api_key,
-        )
-        return response.total_tokens
+        return await self._litellm_online_count_async(wire_messages, wire_tools)
 
     def _prepare_call(
         self,

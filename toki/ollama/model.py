@@ -168,6 +168,20 @@ class OllamaModel(BaseModel):
         tools: ToolsArg = None,
         kind: Literal['exact'] = 'exact',
     ) -> int:
+        """
+        Count the prompt tokens for the given messages (and tools).
+        
+        Produces the EXACT prompt-token count from the Ollama daemon. Issues a
+        `chat(..., options={'num_predict': 0})` call and reads
+        `response.prompt_eval_count` — the same field the daemon would
+        populate on a real generation call. The returned `int` is the
+        ground-truth token count for the model's tokenizer.
+
+        Only `kind='exact'` is exposed; passing any other value raises
+        `ValueError`. The call requires the daemon to be reachable, but
+        since the typical setup runs Ollama on `localhost`, there's no
+        meaningful "offline" alternative to expose.
+        """
         if kind != 'exact':
             raise ValueError(f"OllamaModel only supports kind='exact'; got {kind!r}")
         wire_messages, wire_tools = _prepare_for_count(messages, tools)
@@ -190,6 +204,8 @@ class OllamaModel(BaseModel):
         tools: ToolsArg = None,
         kind: Literal['exact'] = 'exact',
     ) -> int:
+        """Async sibling of `count_tokens`. Same behavior, dispatched through
+        `ollama.AsyncClient`."""
         if kind != 'exact':
             raise ValueError(f"OllamaModel only supports kind='exact'; got {kind!r}")
         wire_messages, wire_tools = _prepare_for_count(messages, tools)
