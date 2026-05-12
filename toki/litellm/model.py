@@ -97,6 +97,8 @@ class _LiteLLMModel(BaseModel):
         messages: list[TokiMessage],
         tools: list[dict] | None,
         kwargs: dict,
+        *,
+        capture_thinking: bool = False,
     ) -> tuple[list[dict], dict]:
         """Subclass hook: produce final wire `messages` and merged call kwargs.
 
@@ -104,6 +106,11 @@ class _LiteLLMModel(BaseModel):
         `reasoning_effort` into the kwargs dict. Subclasses override to inject
         cache_control markers, manage explicit caches, or otherwise transform
         the call before it hits litellm.
+
+        `capture_thinking` lets the default impl auto-engage
+        `reasoning_effort='medium'` when the caller didn't pass an explicit
+        reasoning param — keeps `capture_thinking=True` working on reasoning
+        models without forcing the caller to also set `reasoning_effort`.
         """
         out_kwargs: dict = dict(kwargs)
         if tools:
@@ -111,6 +118,9 @@ class _LiteLLMModel(BaseModel):
             out_kwargs.setdefault("parallel_tool_calls", self.allow_parallel_tool_calls)
         if self.reasoning_effort is not None and "reasoning_effort" not in out_kwargs and "thinking" not in out_kwargs:
             out_kwargs["reasoning_effort"] = self.reasoning_effort
+        elif capture_thinking and "reasoning_effort" not in out_kwargs and "thinking" not in out_kwargs:
+            # capture_thinking alone engages server-side reasoning at medium effort.
+            out_kwargs["reasoning_effort"] = "medium"
         wire_messages = [_msg_to_wire(m) for m in messages]
         return wire_messages, out_kwargs
 
@@ -119,11 +129,37 @@ class _LiteLLMModel(BaseModel):
         messages: list[TokiMessage],
         tools: list[dict] | None,
         kwargs: dict,
+        *,
+        capture_thinking: bool = False,
     ) -> tuple[list[dict], dict]:
         """Async sibling of `_prepare_call`. Default impl just delegates to the
         sync version; subclasses with async-only side effects (e.g. native
         Google cache creation via `client.aio.caches.create`) override this."""
-        return self._prepare_call(messages, tools, kwargs)
+        return self._prepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
+
+    def _get_allow_parallel_tool_calls(self) -> bool:
+        return self.allow_parallel_tool_calls
+
+    def _supports_thinking(self) -> bool | None:
+        """Read `supports_thinking` from this subclass's `attributes_map`.
+        Subclasses must define `_attributes_map()` returning their map (each
+        backend's `models.py` exports `attributes_map`).
+        """
+        attrs_map = self._attributes_map()
+        if attrs_map is None:
+            return None
+        bare = getattr(self, 'model', None)
+        if bare is None:
+            return None
+        attr = attrs_map.get(bare)
+        if attr is None:
+            return None
+        return getattr(attr, 'supports_thinking', None)
+
+    def _attributes_map(self) -> dict | None:
+        """Subclass hook returning the backend's `attributes_map`. Default
+        `None` means "no map" (and `_supports_thinking` returns `None`)."""
+        return None
 
     def _raw_blocking(
         self,
@@ -133,7 +169,7 @@ class _LiteLLMModel(BaseModel):
         capture_thinking: bool,
         **kwargs,
     ) -> _RawTurn:
-        wire_messages, call_kwargs = self._prepare_call(messages, tools, kwargs)
+        wire_messages, call_kwargs = self._prepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
         response = litellm.completion(
             model=self._wire_model,
             api_key=self.api_key,
@@ -151,7 +187,7 @@ class _LiteLLMModel(BaseModel):
         capture_thinking: bool,
         **kwargs,
     ) -> Iterator[_RawChunk]:
-        wire_messages, call_kwargs = self._prepare_call(messages, tools, kwargs)
+        wire_messages, call_kwargs = self._prepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
         stream = litellm.completion(
             model=self._wire_model,
             api_key=self.api_key,
@@ -170,7 +206,7 @@ class _LiteLLMModel(BaseModel):
         capture_thinking: bool,
         **kwargs,
     ) -> _RawTurn:
-        wire_messages, call_kwargs = await self._aprepare_call(messages, tools, kwargs)
+        wire_messages, call_kwargs = await self._aprepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
         response = await litellm.acompletion(
             model=self._wire_model,
             api_key=self.api_key,
@@ -188,7 +224,7 @@ class _LiteLLMModel(BaseModel):
         capture_thinking: bool,
         **kwargs,
     ) -> AsyncIterator[_RawChunk]:
-        wire_messages, call_kwargs = await self._aprepare_call(messages, tools, kwargs)
+        wire_messages, call_kwargs = await self._aprepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
         stream = await litellm.acompletion(
             model=self._wire_model,
             api_key=self.api_key,

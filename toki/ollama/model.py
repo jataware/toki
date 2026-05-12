@@ -9,6 +9,7 @@ from tqdm import tqdm
 from ..model import (
     BaseModel,
     StreamingToolSchema,
+    TokiBackendQuirkWarning,
     TokiMessage,
     TokiToolCall,
     TokiToolFunction,
@@ -22,7 +23,7 @@ from ..model import (
     _RawUsage,
     _unwrap_tools,
 )
-from .models import OllamaModelName
+from .models import OllamaModelName, attributes_map
 
 
 def _normalize_model_name(model: str) -> str:
@@ -91,6 +92,12 @@ class OllamaModel(BaseModel):
         self._warned_streaming_tools = False
         self._ensure_pulled()
 
+    def _supports_thinking(self) -> bool | None:
+        attr = attributes_map.get(self.model)
+        if attr is None:
+            return None
+        return getattr(attr, 'supports_thinking', None)
+
     # ----- pull -------------------------------------------------------------
 
     def _ensure_pulled(self) -> None:
@@ -147,6 +154,7 @@ class OllamaModel(BaseModel):
                     "OllamaModel emits each tool call as a single batch (id+name+arguments together) "
                     "rather than as per-character argument deltas. StreamingToolSchema still works, "
                     "but TokiArgStream values arrive in one shot.",
+                    category=TokiBackendQuirkWarning,
                     stacklevel=3,
                 )
                 self._warned_streaming_tools = True

@@ -137,10 +137,12 @@ class _CacheState:
             return None
 
         if strategy == 'static' and self.entries:
+            from ..model import TokiCacheWarning
             warnings.warn(
                 "cache='static': existing anchor's prefix doesn't match current messages "
                 "(history likely mutated); snapshotting a new anchor. Prior anchors are "
                 "retained so reverting to a previous prefix will silently rehydrate it.",
+                category=TokiCacheWarning,
                 stacklevel=3,
             )
 

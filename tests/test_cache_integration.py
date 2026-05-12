@@ -302,7 +302,7 @@ def test_google_native_caching(strategy: str):
 def test_openrouter_anthropic_caching(strategy: str):
     api_key = _require_env("OPENROUTER_API_KEY")
     model = OpenRouterModel(
-        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-haiku-4.5",
         api_key=api_key,
         cache=strategy,
     )

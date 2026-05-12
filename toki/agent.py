@@ -1,3 +1,4 @@
+import warnings
 from typing import Any, AsyncGenerator, Coroutine, Generator, Generic, Literal, Sequence, TypeVar, cast, overload
 
 from .model import (
@@ -11,6 +12,7 @@ from .model import (
     TokiToolCall,
     TokiToolCallStream,
     TokiToolFunction,
+    TokiToolMismatchWarning,
     TokiToolsResponse,
     TokiToolsThoughtResponse,
     ToolSchema,
@@ -47,6 +49,28 @@ class Agent(Generic[ToolsShape]):
         self.model = model
         self.messages: list[TokiMessage] = []
         self.tools = tools
+        # warn at construction if `tools` are configured against a model
+        # whose `attributes_map` entry says `supports_tools=False`. Quiet when
+        # the model id isn't in the map (Literal isn't exhaustive).
+        if tools is not None:
+            attrs_map = getattr(model, '_attributes_map', None)
+            attrs = attrs_map() if callable(attrs_map) else None
+            if attrs is None:
+                # Some backends (Ollama) don't go through `_attributes_map`;
+                # check by importing their `attributes_map` directly via the
+                # model's module.
+                attrs = _attributes_map_for(model)
+            if attrs is not None:
+                model_id = getattr(model, 'model', None)
+                attr = attrs.get(model_id) if model_id is not None else None
+                if attr is not None and getattr(attr, 'supports_tools', True) is False:
+                    warnings.warn(
+                        f"Agent configured with tools, but model {model_id!r}'s "
+                        "attributes_map entry has supports_tools=False; the model "
+                        "will likely ignore the tool schemas or fail at call time.",
+                        category=TokiToolMismatchWarning,
+                        stacklevel=2,
+                    )
 
     @overload
     def add_message(self, *, role: Role, content: str): ...
@@ -74,6 +98,24 @@ class Agent(Generic[ToolsShape]):
         self.add_message(role='assistant', content=content, tool_calls=tool_calls)
 
     def add_tool_message(self: 'Agent[WithStaticTools] | Agent[WithStreamingTools] | Agent[WithMixedTools]', tool_call_id: str, content: str):
+        # warn if `tool_call_id` doesn't match any pending tool call (a
+        # call that was issued by the assistant but hasn't yet been answered).
+        called: set[str] = set()
+        answered: set[str] = set()
+        for m in self.messages:
+            if m.tool_calls:
+                called.update(tc.id for tc in m.tool_calls)
+            if m.role == 'tool' and m.tool_call_id is not None:
+                answered.add(m.tool_call_id)
+        pending = called - answered
+        if tool_call_id not in pending:
+            warnings.warn(
+                f"add_tool_message(tool_call_id={tool_call_id!r}) does not match any "
+                "pending tool call in this agent's message history. Either the id is "
+                f"wrong, or the call was already answered. Pending ids: {sorted(pending)!r}.",
+                category=TokiToolMismatchWarning,
+                stacklevel=2,
+            )
         self.add_message(role='tool', tool_call_id=tool_call_id, content=content)
 
     def add_system_message(self, content: str):
@@ -262,6 +304,18 @@ class Agent(Generic[ToolsShape]):
             self_with_tools.add_assistant_tool_calls(content, tool_calls)
         else:
             self.add_assistant_message(content)
+
+
+def _attributes_map_for(model: BaseModel) -> dict | None:
+    """Best-effort lookup of a backend's `attributes_map` from the model's
+    module. Returns `None` if the backend doesn't expose one (e.g. LocalModel).
+    """
+    try:
+        import importlib
+        mod = importlib.import_module(type(model).__module__.rsplit('.', 1)[0] + '.models')
+        return getattr(mod, 'attributes_map', None)
+    except (ImportError, AttributeError):
+        return None
 
 
 def _materialize_tool_call(tc: TokiToolCall | TokiToolCallStream) -> TokiToolCall:

@@ -1,4 +1,5 @@
 import json
+import warnings
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
@@ -9,6 +10,44 @@ from .helpers._jsonstream import JsonStreamParser
 
 
 Role = Literal["user", "assistant", "system", "tool"]
+
+
+# --- Warning category hierarchy ----------------------------------------------
+
+class TokiWarning(UserWarning):
+    """Base class for every warning emitted by toki.
+
+    Inherits from the stdlib `UserWarning`, so default behavior is unchanged for
+    callers who don't filter. Subclasses partition the warning surface so that
+    `warnings.filterwarnings('ignore', category=toki.TokiWarning)` silences
+    everything toki emits, and per-category filters can target one slice at a
+    time.
+    """
+
+
+class TokiThinkingSupportWarning(TokiWarning):
+    """`capture_thinking=True` on a model that does not support thinking, or
+    whose thinking support cannot be verified from the backend's `attributes_map`.
+    """
+
+
+class TokiToolMismatchWarning(TokiWarning):
+    """Runtime mismatch between configured tools and the model's emitted tool calls
+    (e.g. tool calls produced when `tools=None`, an unknown tool name, parallel
+    tool calls when not allowed, or an `add_tool_message` referencing an unknown id).
+    """
+
+
+class TokiCacheWarning(TokiWarning):
+    """Caching behavior likely to surprise the user (e.g. rolling cache on a
+    provider that doesn't read prior breakpoints, history mutation invalidating
+    a static anchor, or an explicit-cache creation failure).
+    """
+
+
+class TokiBackendQuirkWarning(TokiWarning):
+    """One-shot informational notices about backend-specific quirks (e.g.
+    Ollama emitting full tool calls instead of per-arg argument deltas)."""
 
 
 # --- Wire / message / tool-call types ----------------------------------------
@@ -573,12 +612,16 @@ class _StreamCore:
         streaming_names: set[str],
         capture_thinking: bool,
         on_usage: Any,  # callable(TokiUsageMetadata) -> None
+        on_finalize_invariants: Any = None,  # callable(list[TokiToolCall]) -> None | None
     ) -> None:
         self._streaming_names = streaming_names
         self._capture_thinking = capture_thinking
         self._on_usage = on_usage
+        self._on_finalize_invariants = on_finalize_invariants
         self._outer: deque = deque()
         self._tool_state: dict[int, _ToolState] = {}
+        # collected tool calls in arrival order, for finalize-time invariant check
+        self._finished_tool_calls: list[TokiToolCall] = []
         # set in attach()
         self._driver: Any = None
         self._tool_call_stream_cls: type = TokiToolCallStream
@@ -630,11 +673,12 @@ class _StreamCore:
                 state.stream._handle_event(ev)
             if ev[0] == 'done':
                 state.finalized = True
+                tc = TokiToolCall(
+                    id=state.id,
+                    function=TokiToolFunction(name=state.name, arguments=ev[1]),
+                )
+                self._finished_tool_calls.append(tc)
                 if not state.is_streaming:
-                    tc = TokiToolCall(
-                        id=state.id,
-                        function=TokiToolFunction(name=state.name, arguments=ev[1]),
-                    )
                     self._outer.append(tc)
 
     def finalize(self) -> None:
@@ -650,16 +694,19 @@ class _StreamCore:
                         state.stream._handle_event(ev)
                     if ev[0] == 'done':
                         state.finalized = True
+                        tc = TokiToolCall(
+                            id=state.id,
+                            function=TokiToolFunction(name=state.name, arguments=ev[1]),
+                        )
+                        self._finished_tool_calls.append(tc)
                         if not state.is_streaming:
-                            tc = TokiToolCall(
-                                id=state.id,
-                                function=TokiToolFunction(name=state.name, arguments=ev[1]),
-                            )
                             self._outer.append(tc)
             except ValueError:
                 pass
             if state.is_streaming and state.stream is not None and not state.finalized:
                 state.stream._mark_source_ended()
+        if self._on_finalize_invariants is not None:
+            self._on_finalize_invariants(list(self._finished_tool_calls))
 
 
 class _SyncStreamDriver:
@@ -799,6 +846,115 @@ class BaseModel(ABC):
     def __init__(self) -> None:
         # updated after every completion
         self._usage_metadata: TokiUsageMetadata | None = None
+        # one-shot suppression keys for `_maybe_warn`
+        self._warned: set[str] = set()
+
+    # ----- warning / capability hooks ----------------------------------------
+
+    def _maybe_warn(
+        self,
+        key: str,
+        msg: str,
+        category: type[Warning] = TokiWarning,
+        stacklevel: int = 3,
+    ) -> None:
+        """Emit a warning at most once per instance for the given `key`."""
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        warnings.warn(msg, category=category, stacklevel=stacklevel)
+
+    def _supports_thinking(self) -> bool | None:
+        """Return True/False if the model's thinking support is known from the
+        backend's `attributes_map`, or `None` if it isn't tracked / the id isn't
+        in the map. Default: `None` (subclasses override)."""
+        return None
+
+    def _get_allow_parallel_tool_calls(self) -> bool:
+        """Return whether this model is configured to permit multiple parallel
+        tool calls in a single turn. Default: `False`. Backends that own that
+        flag (`_LiteLLMModel`, `OpenRouterModel`, `LocalModel`) override.
+        """
+        return False
+
+    def _check_response_invariants(
+        self,
+        tool_calls: list[TokiToolCall],
+        *,
+        declared_tool_names: set[str] | None,
+        allow_parallel: bool,
+    ) -> None:
+        """Post-response sanity checks against the configured tool surface:
+
+        - tool calls produced when `tools=None` was passed.
+        - tool calls whose name isn't in the provided schemas.
+        - multiple tool calls when `allow_parallel_tool_calls=False`.
+
+        These are not one-shot — each violation indicates a fresh, unexpected
+        model output and is worth surfacing.
+        """
+        if not tool_calls:
+            return
+        if declared_tool_names is None:
+            warnings.warn(
+                "model emitted tool call(s) but `tools=None` was passed; these calls "
+                "won't round-trip through the normal tool flow. If you're describing "
+                "functions in the prompt as instructions for code generation, the model "
+                "may still be emitting tool calls — consider rephrasing the prompt.",
+                category=TokiToolMismatchWarning,
+                stacklevel=4,
+            )
+            return
+        unknown_names: set[str] = set()
+        for tc in tool_calls:
+            if tc.function.name not in declared_tool_names:
+                unknown_names.add(tc.function.name)
+        for name in unknown_names:
+            warnings.warn(
+                f"model emitted a tool call to {name!r}, which is not in the provided "
+                f"tool schemas {sorted(declared_tool_names)!r}.",
+                category=TokiToolMismatchWarning,
+                stacklevel=4,
+            )
+        if not allow_parallel and len(tool_calls) > 1:
+            warnings.warn(
+                f"model emitted {len(tool_calls)} tool calls but "
+                "`allow_parallel_tool_calls=False`; only the first call should normally "
+                "be returned. Pass `allow_parallel_tool_calls=True` on the model "
+                "constructor if you want parallel tool calls.",
+                category=TokiToolMismatchWarning,
+                stacklevel=4,
+            )
+
+    def _maybe_warn_capture_thinking(self) -> None:
+        """Emit a one-shot warning when `capture_thinking=True` is used against
+        a model whose thinking support is `False` or unverifiable. Called from
+        `complete()` / `acomplete()` whenever `capture_thinking=True`."""
+        support = self._supports_thinking()
+        if support is True:
+            return
+        model_label = getattr(self, 'model', None) or type(self).__name__
+        if support is False:
+            self._maybe_warn(
+                'capture_thinking_unsupported',
+                f"capture_thinking=True on {model_label!r}: this model's "
+                "attributes_map entry has supports_thinking=False; the model will not "
+                "produce thinking text. Silence via `warnings.filterwarnings('ignore', "
+                "category=toki.TokiThinkingSupportWarning)`.",
+                category=TokiThinkingSupportWarning,
+                stacklevel=4,
+            )
+        else:  # support is None
+            self._maybe_warn(
+                'capture_thinking_unverified',
+                f"capture_thinking=True on {model_label!r}: thinking support could "
+                "not be verified (model not in attributes_map, or the backend's Attr "
+                "doesn't carry the field). The model may or may not produce thinking "
+                "text. See README §Capturing Thinking for guidance, or silence via "
+                "`warnings.filterwarnings('ignore', category=toki.TokiThinkingSupportWarning)`.",
+                category=TokiThinkingSupportWarning,
+                stacklevel=4,
+            )
 
     # ----- abstract raw-I/O methods ------------------------------------------
 
@@ -921,19 +1077,32 @@ class BaseModel(ABC):
         capture_thinking: bool = False,
         **kwargs,
     ):
+        if capture_thinking:
+            self._maybe_warn_capture_thinking()
         normalized = [TokiMessage.from_dict(m) for m in messages]
         wire_tools, streaming_names = _unwrap_tools(tools)
+        declared_tool_names = (
+            {t['function']['name'] for t in wire_tools} if wire_tools else None
+        )
+        allow_parallel = self._get_allow_parallel_tool_calls()
         if stream:
             source = self._raw_streaming(normalized, wire_tools, capture_thinking=capture_thinking, **kwargs)
             core = _StreamCore(
                 streaming_names=streaming_names,
                 capture_thinking=capture_thinking,
                 on_usage=self._record_usage,
+                on_finalize_invariants=lambda tcs: self._check_response_invariants(
+                    tcs, declared_tool_names=declared_tool_names, allow_parallel=allow_parallel,
+                ),
             )
             driver = _SyncStreamDriver(source, core)
             return driver.outer_generator()
+        turn = self._raw_blocking(normalized, wire_tools, capture_thinking=capture_thinking, **kwargs)
+        self._check_response_invariants(
+            turn.tool_calls, declared_tool_names=declared_tool_names, allow_parallel=allow_parallel,
+        )
         return self._build_blocking_response(
-            self._raw_blocking(normalized, wire_tools, capture_thinking=capture_thinking, **kwargs),
+            turn,
             streaming_names=streaming_names,
             capture_thinking=capture_thinking,
             async_mode=False,
@@ -987,18 +1156,34 @@ class BaseModel(ABC):
         capture_thinking: bool = False,
         **kwargs,
     ):
+        if capture_thinking:
+            self._maybe_warn_capture_thinking()
         normalized = [TokiMessage.from_dict(m) for m in messages]
         wire_tools, streaming_names = _unwrap_tools(tools)
+        declared_tool_names = (
+            {t['function']['name'] for t in wire_tools} if wire_tools else None
+        )
+        allow_parallel = self._get_allow_parallel_tool_calls()
         if stream:
             source = self._raw_streaming_async(normalized, wire_tools, capture_thinking=capture_thinking, **kwargs)
             core = _StreamCore(
                 streaming_names=streaming_names,
                 capture_thinking=capture_thinking,
                 on_usage=self._record_usage,
+                on_finalize_invariants=lambda tcs: self._check_response_invariants(
+                    tcs, declared_tool_names=declared_tool_names, allow_parallel=allow_parallel,
+                ),
             )
             driver = _AsyncStreamDriver(source, core)
             return driver.outer_agen()
-        return self._acomplete_blocking(normalized, wire_tools, streaming_names=streaming_names, capture_thinking=capture_thinking, **kwargs)
+        return self._acomplete_blocking(
+            normalized, wire_tools,
+            streaming_names=streaming_names,
+            capture_thinking=capture_thinking,
+            declared_tool_names=declared_tool_names,
+            allow_parallel=allow_parallel,
+            **kwargs,
+        )
 
     async def _acomplete_blocking(
         self,
@@ -1007,9 +1192,14 @@ class BaseModel(ABC):
         *,
         streaming_names: set[str],
         capture_thinking: bool,
+        declared_tool_names: set[str] | None,
+        allow_parallel: bool,
         **kwargs,
     ):
         turn = await self._raw_blocking_async(messages, wire_tools, capture_thinking=capture_thinking, **kwargs)
+        self._check_response_invariants(
+            turn.tool_calls, declared_tool_names=declared_tool_names, allow_parallel=allow_parallel,
+        )
         return self._build_blocking_response(
             turn,
             streaming_names=streaming_names,

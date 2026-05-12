@@ -249,6 +249,16 @@ class LocalModel(BaseModel):
         self._model.to(self.device)
         self._model.eval()
 
+    def _get_allow_parallel_tool_calls(self) -> bool:
+        return self.allow_parallel_tool_calls
+
+    def _supports_thinking(self) -> bool | None:
+        # LocalModel's Attr intentionally doesn't carry `supports_thinking` —
+        # HuggingFace chat templates don't expose a reliable machine-readable
+        # signal, so `_supports_thinking()` returns None and `capture_thinking=True`
+        # always emits a TokiThinkingSupportWarning.
+        return None
+
     def count_tokens(
         self,
         messages: list[TokiMessage | dict],

@@ -8,10 +8,13 @@ from typing_extensions import NotRequired
 
 from ..anthropic.utils import _with_text_cache_marker, apply_cache_markers, build_cache_control
 from ..helpers.cache_state import _CacheState, estimate_messages_tokens
+from ..litellm.model import ReasoningEffort
 from ..model import (
     BaseModel,
     TokenCountEstimate,
+    TokiCacheWarning,
     TokiMessage,
+    TokiThinkingSupportWarning,
     TokiToolCall,
     TokiUsageMetadata,
     ToolsArg,
@@ -23,7 +26,7 @@ from ..model import (
     _RawUsage,
     _unwrap_tools,
 )
-from .models import OpenRouterModelName
+from .models import OpenRouterModelName, attributes_map
 
 
 _OPENROUTER_OFFLINE_SAFETY_FACTOR_DEFAULT = 1.15
@@ -140,6 +143,7 @@ class OpenRouterModel(BaseModel):
         api_key: str,
         allow_parallel_tool_calls: bool = False,
         *,
+        reasoning_effort: ReasoningEffort | None = None,
         cache: Literal['rolling', 'static'] | None = None,
         cache_ttl: Literal['5m', '1h'] = '5m',
     ):
@@ -147,14 +151,55 @@ class OpenRouterModel(BaseModel):
         self.model = model
         self.api_key = api_key
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
+        self.reasoning_effort = reasoning_effort
         self.cache = cache
         self.cache_ttl = cache_ttl
         self._cache_state = _CacheState(min_cache_size_estimate=_OPENROUTER_MIN_CACHE_TOKENS)
         if cache is not None and self._cache_route() is None:
             warnings.warn(
                 f"OpenRouter caching has no effect for {model!r}; provider does not support caching breakpoints.",
+                category=TokiCacheWarning,
                 stacklevel=2,
             )
+        # rolling cache on Anthropic-route models engages caching every turn
+        # but does not reliably produce cache reads on Claude. Surface this once
+        # at construction so the user knows to switch to 'static' if they need
+        # deterministic prefix-cache hits.
+        if cache == 'rolling' and model.startswith('anthropic/'):
+            warnings.warn(
+                f"OpenRouterModel cache='rolling' on Anthropic-route model {model!r}: "
+                "rolling caching engages cache_control breakpoints every turn but does "
+                "not reliably produce cache reads on Claude through OpenRouter. Use "
+                "cache='static' if you need deterministic prefix-cache hits.",
+                category=TokiCacheWarning,
+                stacklevel=2,
+            )
+
+    def _get_allow_parallel_tool_calls(self) -> bool:
+        return self.allow_parallel_tool_calls
+
+    def _supports_thinking(self) -> bool | None:
+        attr = attributes_map.get(self.model)
+        if attr is None:
+            return None
+        return getattr(attr, 'supports_thinking', None)
+
+    def _maybe_warn_capture_thinking(self) -> None:
+        # OpenRouter-routed OpenAI models also don't reliably surface reasoning
+        # text on the chat-completions wire — same caveat as the native OpenAI
+        # backend; fire the same warning before delegating to the base check.
+        if self.model.startswith('openai/'):
+            self._maybe_warn(
+                'capture_thinking_openai_unreliable',
+                f"capture_thinking=True on OpenAI-route model {self.model!r}: OpenAI's "
+                "chat-completions API does not reliably surface reasoning text — "
+                "server-side reasoning still engages (and improves answer quality at "
+                "higher effort), but the chain itself is rarely returned. Silence via "
+                "`warnings.filterwarnings('ignore', category=toki.TokiThinkingSupportWarning)`.",
+                category=TokiThinkingSupportWarning,
+                stacklevel=4,
+            )
+        super()._maybe_warn_capture_thinking()
 
     def invalidate_cache(self) -> None:
         """Drop the historical anchor list. Next `'static'` call will defer
@@ -310,7 +355,18 @@ class OpenRouterModel(BaseModel):
         wire_messages = [_msg_to_wire(m) for m in messages]
         wire_messages, wire_tools, payload_extra = self._apply_caching(messages, wire_messages, tools, tools)
         tool_payload = {"tools": wire_tools, "parallel_tool_calls": self.allow_parallel_tool_calls} if wire_tools else {}
-        reasoning_payload = {"reasoning": {"enabled": True}} if capture_thinking else {}
+        # Reasoning payload precedence:
+        #   1. user `reasoning=...` via **kwargs (handled by `**kwargs` below)
+        #   2. ctor `reasoning_effort`
+        #   3. `capture_thinking=True` (auto-engages medium effort via `enabled: true`)
+        if "reasoning" in kwargs:
+            reasoning_payload: dict = {}
+        elif self.reasoning_effort is not None:
+            reasoning_payload = {"reasoning": {"effort": self.reasoning_effort}}
+        elif capture_thinking:
+            reasoning_payload = {"reasoning": {"enabled": True}}
+        else:
+            reasoning_payload = {}
         payload: dict = {
             "model": self.model,
             "messages": wire_messages,

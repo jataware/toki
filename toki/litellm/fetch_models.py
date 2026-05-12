@@ -44,6 +44,7 @@ def fetch_provider_models(provider: str) -> list[dict]:
             "id": bare,
             "context_size": ctx,
             "supports_tools": bool(info.get("supports_function_calling")),
+            "supports_thinking": bool(info.get("supports_reasoning")),
         })
     out.sort(key=lambda x: x["id"])
     return out
@@ -61,7 +62,7 @@ def write_models_file(*, file: PathLike, name_alias: str, fetch_script: str, ids
     print(f"Writing {file} with {len(ids_with_attrs)} models")
     name_lines = ',\n    '.join(f"'{m['id']}'" for m in ids_with_attrs)
     attributes_lines = ',\n    '.join(
-        f'''{f'"{m["id"]}":':<60}Attr(context_size={m["context_size"]}, supports_tools={m["supports_tools"]})'''
+        f'''{f'"{m["id"]}":':<60}Attr(context_size={m["context_size"]}, supports_tools={m["supports_tools"]}, supports_thinking={m["supports_thinking"]})'''
         for m in ids_with_attrs
     )
     file.write_text(f'''\
@@ -81,6 +82,7 @@ from dataclasses import dataclass
 class Attr:
     context_size: int
     supports_tools: bool
+    supports_thinking: bool
     # TBD: may add more in the future
 
 

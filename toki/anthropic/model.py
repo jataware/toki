@@ -1,9 +1,10 @@
+import warnings
 from typing import Literal
 
 from ..helpers.cache_state import _CacheState, estimate_messages_tokens
 from ..litellm.model import ReasoningEffort, _LiteLLMModel
-from ..model import TokenCountEstimate, TokiMessage, ToolsArg
-from .models import AnthropicModelName
+from ..model import TokenCountEstimate, TokiCacheWarning, TokiMessage, ToolsArg
+from .models import AnthropicModelName, attributes_map
 from .utils import apply_cache_markers
 
 
@@ -59,6 +60,22 @@ class AnthropicModel(_LiteLLMModel):
         self.cache = cache
         self.cache_ttl = cache_ttl
         self._cache_state = _CacheState(min_cache_size_estimate=_ANTHROPIC_MIN_CACHE_TOKENS)
+        # rolling caching engages cache_control breakpoints every turn but
+        # does not reliably produce cache reads on Claude. Surface once at
+        # construction so the user knows to switch to 'static' if they need
+        # deterministic prefix-cache hits.
+        if cache == 'rolling':
+            warnings.warn(
+                f"AnthropicModel cache='rolling' on {model!r}: rolling caching engages "
+                "cache_control breakpoints every turn but does not reliably produce "
+                "cache reads on Claude. Use cache='static' if you need deterministic "
+                "prefix-cache hits.",
+                category=TokiCacheWarning,
+                stacklevel=2,
+            )
+
+    def _attributes_map(self) -> dict:
+        return attributes_map
 
     def invalidate_cache(self) -> None:
         """Drop the historical anchor list. Next `'static'` call will defer
@@ -128,8 +145,10 @@ class AnthropicModel(_LiteLLMModel):
         messages: list[TokiMessage],
         tools: list[dict] | None,
         kwargs: dict,
+        *,
+        capture_thinking: bool = False,
     ) -> tuple[list[dict], dict]:
-        wire_messages, out_kwargs = super()._prepare_call(messages, tools, kwargs)
+        wire_messages, out_kwargs = super()._prepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
         if self.cache is None:
             return wire_messages, out_kwargs
 

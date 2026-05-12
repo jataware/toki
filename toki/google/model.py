@@ -4,8 +4,8 @@ from typing import Literal
 
 from ..helpers.cache_state import _CacheState, estimate_messages_tokens
 from ..litellm.model import ReasoningEffort, _LiteLLMModel
-from ..model import TokenCountEstimate, TokiMessage, ToolsArg
-from .models import GoogleModelName
+from ..model import TokenCountEstimate, TokiCacheWarning, TokiMessage, ToolsArg
+from .models import GoogleModelName, attributes_map
 
 
 _GOOGLE_OFFLINE_SAFETY_FACTOR_DEFAULT = 1.15
@@ -195,6 +195,7 @@ class _GoogleCacheManager:
                 warnings.warn(
                     f"Gemini explicit-cache creation failed ({type(e).__name__}: {e}); "
                     "falling back to a non-cached call.",
+                    category=TokiCacheWarning,
                     stacklevel=4,
                 )
                 return None, None
@@ -224,6 +225,7 @@ class _GoogleCacheManager:
                 warnings.warn(
                     f"Gemini explicit-cache creation failed ({type(e).__name__}: {e}); "
                     "falling back to a non-cached call.",
+                    category=TokiCacheWarning,
                     stacklevel=4,
                 )
                 return None, None
@@ -285,6 +287,9 @@ class GoogleModel(_LiteLLMModel):
             refresh_delta_tokens=cache_refresh_delta_tokens,
             refresh_buffer_seconds=cache_refresh_buffer_seconds,
         )
+
+    def _attributes_map(self) -> dict:
+        return attributes_map
 
     def invalidate_cache(self) -> None:
         """Drop the historical anchor list. Next `'static'` call snapshots
@@ -348,7 +353,7 @@ class GoogleModel(_LiteLLMModel):
             return self._wrap_estimate(raw, safety_factor)
         return await self._litellm_online_count_async(wire_messages, wire_tools)
 
-    def _post_cache_kwargs(self, tail: list[TokiMessage], cache_name: str, kwargs: dict) -> tuple[list[dict], dict]:
+    def _post_cache_kwargs(self, tail: list[TokiMessage], cache_name: str, kwargs: dict, *, capture_thinking: bool) -> tuple[list[dict], dict]:
         """Build the live request shape after a successful cache resolution:
         strip system messages from the tail (they're inside the cache),
         attach `cached_content`, and drop `tools` / `parallel_tool_calls`
@@ -361,28 +366,30 @@ class GoogleModel(_LiteLLMModel):
         out_kwargs.pop("parallel_tool_calls", None)
         if self.reasoning_effort is not None and "reasoning_effort" not in out_kwargs and "thinking" not in out_kwargs:
             out_kwargs["reasoning_effort"] = self.reasoning_effort
+        elif capture_thinking and "reasoning_effort" not in out_kwargs and "thinking" not in out_kwargs:
+            out_kwargs["reasoning_effort"] = "medium"
         return wire_messages, out_kwargs
 
-    def _prepare_call(self, messages, tools, kwargs):
+    def _prepare_call(self, messages, tools, kwargs, *, capture_thinking: bool = False):
         if self.cache is None:
-            return super()._prepare_call(messages, tools, kwargs)
+            return super()._prepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
         tail, cache_name = self._cache_manager.prepare(
             strategy=self.cache,
             messages=messages,
             tools_wire=tools,
         )
         if cache_name is None:
-            return super()._prepare_call(messages, tools, kwargs)
-        return self._post_cache_kwargs(tail, cache_name, kwargs)
+            return super()._prepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
+        return self._post_cache_kwargs(tail, cache_name, kwargs, capture_thinking=capture_thinking)
 
-    async def _aprepare_call(self, messages, tools, kwargs):
+    async def _aprepare_call(self, messages, tools, kwargs, *, capture_thinking: bool = False):
         if self.cache is None:
-            return super()._prepare_call(messages, tools, kwargs)
+            return super()._prepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
         tail, cache_name = await self._cache_manager.aprepare(
             strategy=self.cache,
             messages=messages,
             tools_wire=tools,
         )
         if cache_name is None:
-            return super()._prepare_call(messages, tools, kwargs)
-        return self._post_cache_kwargs(tail, cache_name, kwargs)
+            return super()._prepare_call(messages, tools, kwargs, capture_thinking=capture_thinking)
+        return self._post_cache_kwargs(tail, cache_name, kwargs, capture_thinking=capture_thinking)

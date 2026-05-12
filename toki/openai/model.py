@@ -1,8 +1,8 @@
 from typing import Literal
 
 from ..litellm.model import ReasoningEffort, _LiteLLMModel
-from ..model import TokiMessage, ToolsArg
-from .models import OpenAIModelName
+from ..model import TokiMessage, TokiThinkingSupportWarning, ToolsArg
+from .models import OpenAIModelName, attributes_map
 
 
 class OpenAIModel(_LiteLLMModel):
@@ -28,6 +28,29 @@ class OpenAIModel(_LiteLLMModel):
             allow_parallel_tool_calls=allow_parallel_tool_calls,
         )
         self.model = model
+
+    def _attributes_map(self) -> dict:
+        return attributes_map
+
+    def _maybe_warn_capture_thinking(self) -> None:
+        # OpenAI's chat-completions endpoint doesn't reliably surface reasoning
+        # text in `reasoning_content`. Warn once, regardless of whether
+        # attributes_map says the model supports reasoning — the wire support
+        # and the user-visible thought text are decoupled.
+        self._maybe_warn(
+            'capture_thinking_openai_unreliable',
+            f"capture_thinking=True on OpenAI model {self.model!r}: OpenAI's "
+            "chat-completions API does not reliably surface reasoning text — "
+            "server-side reasoning still engages (and improves answer quality at "
+            "higher effort), but the chain itself is rarely returned. The "
+            "`thought` field on the response may be empty. Silence via "
+            "`warnings.filterwarnings('ignore', category=toki.TokiThinkingSupportWarning)`.",
+            category=TokiThinkingSupportWarning,
+            stacklevel=4,
+        )
+        # Also fire the standard supports_thinking check (False / None) so
+        # users hit the same path the other backends do.
+        super()._maybe_warn_capture_thinking()
 
     def count_tokens(
         self,

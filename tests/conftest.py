@@ -53,7 +53,7 @@ def pytest_configure(config: pytest.Config) -> None:
 # reasoning_effort=...)` is exposed), but we can't reliably assert on captured
 # thoughts so the corresponding `capture_thinking=True` tests are skipped.
 MODELS: dict[str, dict[str, str | None]] = {
-    "openrouter": {"default": "anthropic/claude-haiku-4-5",   "reasoning": "anthropic/claude-sonnet-4-5"},
+    "openrouter": {"default": "anthropic/claude-haiku-4.5",   "reasoning": "anthropic/claude-sonnet-4.5"},
     "openai":     {"default": "gpt-5.4-nano",                 "reasoning": None},
     "anthropic":  {"default": "claude-haiku-4-5",             "reasoning": "claude-sonnet-4-5"},
     "google":     {"default": "gemini-2.5-flash",             "reasoning": "gemini-2.5-flash"},

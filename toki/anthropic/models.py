@@ -33,28 +33,29 @@ AnthropicModelName = Literal[
 class Attr:
     context_size: int
     supports_tools: bool
+    supports_thinking: bool
     # TBD: may add more in the future
 
 
 attributes_map: dict[AnthropicModelName, Attr] = {
-    "claude-3-7-sonnet-20250219":                               Attr(context_size=200000, supports_tools=True),
-    "claude-3-haiku-20240307":                                  Attr(context_size=200000, supports_tools=True),
-    "claude-3-opus-20240229":                                   Attr(context_size=200000, supports_tools=True),
-    "claude-4-opus-20250514":                                   Attr(context_size=200000, supports_tools=True),
-    "claude-4-sonnet-20250514":                                 Attr(context_size=1000000, supports_tools=True),
-    "claude-haiku-4-5":                                         Attr(context_size=200000, supports_tools=True),
-    "claude-haiku-4-5-20251001":                                Attr(context_size=200000, supports_tools=True),
-    "claude-opus-4-1":                                          Attr(context_size=200000, supports_tools=True),
-    "claude-opus-4-1-20250805":                                 Attr(context_size=200000, supports_tools=True),
-    "claude-opus-4-20250514":                                   Attr(context_size=200000, supports_tools=True),
-    "claude-opus-4-5":                                          Attr(context_size=200000, supports_tools=True),
-    "claude-opus-4-5-20251101":                                 Attr(context_size=200000, supports_tools=True),
-    "claude-opus-4-6":                                          Attr(context_size=1000000, supports_tools=True),
-    "claude-opus-4-6-20260205":                                 Attr(context_size=1000000, supports_tools=True),
-    "claude-opus-4-7":                                          Attr(context_size=1000000, supports_tools=True),
-    "claude-opus-4-7-20260416":                                 Attr(context_size=1000000, supports_tools=True),
-    "claude-sonnet-4-20250514":                                 Attr(context_size=1000000, supports_tools=True),
-    "claude-sonnet-4-5":                                        Attr(context_size=200000, supports_tools=True),
-    "claude-sonnet-4-5-20250929":                               Attr(context_size=200000, supports_tools=True),
-    "claude-sonnet-4-6":                                        Attr(context_size=1000000, supports_tools=True)
+    "claude-3-7-sonnet-20250219":                               Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-3-haiku-20240307":                                  Attr(context_size=200000, supports_tools=True, supports_thinking=False),
+    "claude-3-opus-20240229":                                   Attr(context_size=200000, supports_tools=True, supports_thinking=False),
+    "claude-4-opus-20250514":                                   Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-4-sonnet-20250514":                                 Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
+    "claude-haiku-4-5":                                         Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-haiku-4-5-20251001":                                Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-opus-4-1":                                          Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-opus-4-1-20250805":                                 Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-opus-4-20250514":                                   Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-opus-4-5":                                          Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-opus-4-5-20251101":                                 Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-opus-4-6":                                          Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
+    "claude-opus-4-6-20260205":                                 Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
+    "claude-opus-4-7":                                          Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
+    "claude-opus-4-7-20260416":                                 Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
+    "claude-sonnet-4-20250514":                                 Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
+    "claude-sonnet-4-5":                                        Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-sonnet-4-5-20250929":                               Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-sonnet-4-6":                                        Attr(context_size=1000000, supports_tools=True, supports_thinking=True)
 }
