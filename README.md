@@ -856,7 +856,7 @@ Each handler returns the next `State` (or `END_STATE` to terminate).
 
 ## Development
 - Python ≥ 3.10
-- install all deps for dev: `uv sync --extra all'`
+- install all deps for dev: `uv sync --extra all`
 - Useful scripts:
   - `toki-fetch-openrouter-models` — regenerate `toki/openrouter/models.py` from the live OpenRouter API
   - `toki-fetch-local-models` — regenerate `toki/local/models.py` from popular HuggingFace chat models
