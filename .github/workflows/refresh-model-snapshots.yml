@@ -71,7 +71,7 @@ jobs:
       - name: Upgrade litellm for freshest bundled model metadata
         run: |
           uv pip install --upgrade litellm
-          uv run python -c "import litellm; print('litellm', litellm.__version__)"
+          uv run python -c "from importlib.metadata import version; print('litellm', version('litellm'))"
 
       - name: Run fetch-models scripts
         run: |

@@ -52,3 +52,34 @@ def test_anthropic_utils_import_without_litellm(no_litellm):
     assert callable(get_anthropic_api_key)
     assert 'toki.anthropic.model' not in sys.modules
     assert 'toki.litellm.model' not in sys.modules
+
+
+@pytest.fixture
+def no_ollama(monkeypatch):
+    _unload_backends()
+    monkeypatch.setitem(sys.modules, 'ollama', None)
+    yield
+    _unload_backends()
+
+
+@pytest.fixture
+def no_torch(monkeypatch):
+    _unload_backends()
+    monkeypatch.setitem(sys.modules, 'torch', None)
+    monkeypatch.setitem(sys.modules, 'transformers', None)
+    yield
+    _unload_backends()
+
+
+def test_ollama_fetch_imports_without_ollama_package(no_ollama):
+    from toki.ollama.fetch_models import _create_models_types_file
+
+    assert callable(_create_models_types_file)
+    assert 'toki.ollama.model' not in sys.modules
+
+
+def test_local_fetch_imports_without_torch(no_torch):
+    from toki.local.fetch_models import _create_models_types_file
+
+    assert callable(_create_models_types_file)
+    assert 'toki.local.transformers' not in sys.modules
