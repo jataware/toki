@@ -1,12 +1,13 @@
 import asyncio
 import json
 import threading
-from typing import Any, AsyncIterator, Iterator, Literal
+from typing import Any, AsyncIterator, Iterator
 
 import litellm
 
 from ..model import (
     BaseModel,
+    ReasoningEffort,
     TokenCountEstimate,
     TokiMessage,
     TokiToolCall,
@@ -38,12 +39,6 @@ litellm.modify_params = True
 # re-enable aiohttp by setting `litellm.disable_aiohttp_transport = False` after
 # importing toki.
 litellm.disable_aiohttp_transport = True
-
-
-# Server-side reasoning compute knob. Provider-supported subsets vary; the union below
-# covers every value any backend currently exposes. Pass `None` (the Python default) to
-# disable reasoning entirely — there is no string `'none'`.
-ReasoningEffort = Literal['minimal', 'low', 'medium', 'high', 'xhigh']
 
 
 def _tool_call_to_wire(tc: TokiToolCall) -> dict:

@@ -8,9 +8,9 @@ from typing_extensions import NotRequired
 
 from ..anthropic.utils import _with_text_cache_marker, apply_cache_markers, build_cache_control
 from ..helpers.cache_state import _CacheState, estimate_messages_tokens
-from ..litellm.model import ReasoningEffort
 from ..model import (
     BaseModel,
+    ReasoningEffort,
     TokenCountEstimate,
     TokiCacheWarning,
     TokiMessage,

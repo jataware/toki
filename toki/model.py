@@ -11,6 +11,11 @@ from .helpers._jsonstream import JsonStreamParser
 
 Role = Literal["user", "assistant", "system", "tool"]
 
+# Server-side reasoning compute knob. Provider-supported subsets vary; the union
+# covers every value any backend currently exposes. Pass `None` (the Python
+# default) to disable reasoning entirely — there is no string `'none'`.
+ReasoningEffort = Literal['minimal', 'low', 'medium', 'high', 'xhigh']
+
 
 # --- Warning category hierarchy ----------------------------------------------
 
