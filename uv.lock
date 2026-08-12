@@ -2637,6 +2637,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-html" },
     { name = "tqdm" },
+    { name = "transformers" },
 ]
 
 [package.metadata]
@@ -2666,6 +2667,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "pytest-html", specifier = ">=4" },
     { name = "tqdm", specifier = ">=4" },
+    { name = "transformers", specifier = ">=4.40" },
 ]
 
 [[package]]

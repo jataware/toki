@@ -2,17 +2,20 @@
 
 `list_local_chat_models` and `_create_models_types_file` together maintain the
 curated `toki/local/models.py` snapshot of HuggingFace chat models. Imports
-here (`huggingface_hub`, `tqdm`) live in the `dev` dependency group rather
-than the `local` runtime extra.
+here (`huggingface_hub`, `tqdm`, `transformers`) live in the `dev` dependency
+group rather than the `local` runtime extra. `transformers` is used only to
+fill Hub `config.json` keys omitted because they match the class default
+(Gemma 3 multimodal's 128K `max_position_embeddings` is the usual case).
 """
 
 import importlib.util
 import json
+from functools import cache
 from os import PathLike
 from pathlib import Path
 from typing import Literal
 
-from huggingface_hub import HfApi, hf_hub_download, list_repo_files
+from huggingface_hub import HfApi, get_token, hf_hub_download, list_repo_files, whoami
 from huggingface_hub.utils import HfHubHTTPError, disable_progress_bars
 
 try:
@@ -66,7 +69,7 @@ def _hub_candidates(
     min_downloads: int,
 ) -> list:
     """Hub repos for `sort_by`, de-duped across pipeline tags, highest score first."""
-    api = HfApi()
+    api = HfApi(token=get_token())
     seen: set[str] = set()
     scored: list[tuple[int, object]] = []
     for tag in pipeline_tags:
@@ -155,11 +158,49 @@ class _HubSkip(Exception):
         self.reason = reason
 
 
+@cache
+def _hub_user() -> str | None:
+    """HuggingFace username for the current token, or None if unauthenticated."""
+    token = get_token()
+    if not token:
+        return None
+    try:
+        return whoami(token=token).get("name")
+    except Exception:
+        return None
+
+
+def _print_hub_auth() -> None:
+    token = get_token()
+    if not token:
+        print("HuggingFace: no token (set HF_TOKEN to include gated models like Llama/Gemma)")
+        return
+    user = _hub_user()
+    if user:
+        print(f"HuggingFace: authenticated as {user}")
+    else:
+        print("HuggingFace: HF_TOKEN is set but whoami failed — token may be invalid")
+
+
+def _gated_skip_reason(repo_id: str) -> str:
+    url = f"https://huggingface.co/{repo_id}"
+    user = _hub_user()
+    if user:
+        return (
+            f"gated repo — authenticated as {user!r} but not authorized; "
+            f"accept the license at {url} while logged in as that user "
+            f"(each model family has its own agreement)"
+        )
+    if get_token():
+        return f"gated repo — HF_TOKEN is set but HuggingFace rejected it; accept the license at {url}"
+    return f"gated repo — HF_TOKEN is not set; set it and accept the license at {url}"
+
+
 def _hub_download(repo_id: str, filename: str) -> Path | None:
     try:
-        return Path(hf_hub_download(repo_id, filename))
+        return Path(hf_hub_download(repo_id, filename, token=get_token()))
     except GatedRepoError as e:
-        raise _HubSkip("gated repo — set HF_TOKEN and accept the model license on HuggingFace") from e
+        raise _HubSkip(_gated_skip_reason(repo_id)) from e
     except HfHubHTTPError:
         return None
 
@@ -226,9 +267,9 @@ def _get_chat_template_text(repo_id: str) -> str | None:
     on `tokenizer_config.json` / `processor_config.json` (string or named-list).
     """
     try:
-        files = list_repo_files(repo_id)
+        files = list_repo_files(repo_id, token=get_token())
     except GatedRepoError as e:
-        raise _HubSkip("gated repo — set HF_TOKEN and accept the model license on HuggingFace") from e
+        raise _HubSkip(_gated_skip_reason(repo_id)) from e
     except HfHubHTTPError:
         return None
 
@@ -274,10 +315,7 @@ def _context_from_dict(cfg: dict) -> int | None:
     return None
 
 
-def _get_context_size(repo_id: str) -> int | None:
-    cfg = _hub_json(repo_id, "config.json")
-    if not isinstance(cfg, dict):
-        return None
+def _context_from_cfg(cfg: dict) -> int | None:
     n = _context_from_dict(cfg)
     if n is not None:
         return n
@@ -288,6 +326,38 @@ def _get_context_size(repo_id: str) -> int | None:
             if n is not None:
                 return n
     return None
+
+
+def _context_from_transformers(repo_id: str) -> int | None:
+    """Fill keys Hub `config.json` omitted because they match the class default.
+
+    Transformers saves multimodal configs with `to_diff_dict`, so e.g. Gemma 3
+    4B/12B/27B have no `max_position_embeddings` on disk (128K is the
+    `Gemma3TextConfig` default). The 1B text-only checkpoint publishes 32K
+    explicitly and does not take this path.
+    """
+    try:
+        from transformers import AutoConfig
+    except ImportError:
+        return None
+    try:
+        cfg = AutoConfig.from_pretrained(repo_id, token=get_token(), trust_remote_code=False)
+    except Exception:
+        return None
+    data = cfg.to_dict() if hasattr(cfg, "to_dict") else None
+    if not isinstance(data, dict):
+        return None
+    return _context_from_cfg(data)
+
+
+def _get_context_size(repo_id: str) -> int | None:
+    cfg = _hub_json(repo_id, "config.json")
+    if not isinstance(cfg, dict):
+        return None
+    n = _context_from_cfg(cfg)
+    if n is not None:
+        return n
+    return _context_from_transformers(repo_id)
 
 
 def _load_existing_attrs(file: Path) -> dict[str, dict]:
@@ -372,6 +442,7 @@ def _create_models_types_file(
     HF repo id as a plain string; this Literal is only autocomplete.
     """
     file = Path(file)
+    _print_hub_auth()
     existing = _load_existing_attrs(file)
     if existing:
         print(f"Loaded {len(existing)} existing entries from {file.relative_to(here.parent)}")

@@ -81,7 +81,7 @@ jobs:
             exit 1
           fi
           if [ -z "${HF_TOKEN}" ]; then
-            echo "::warning::HF_TOKEN secret is not set; HuggingFace may rate-limit the local-models fetch."
+            echo "::warning::HF_TOKEN secret is not set; gated HuggingFace models (Llama, Gemma, ...) will be skipped."
           fi
           uv run toki-fetch-openrouter-models
           uv run toki-fetch-openai-models
