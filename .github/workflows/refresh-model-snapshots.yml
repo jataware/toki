@@ -1,0 +1,240 @@
+name: Refresh model snapshots
+
+on:
+  schedule:
+    # ~every 2 weeks (1st and 15th, 14:00 UTC). Edit this cron to change the interval.
+    # GitHub cron has no exact "every N weeks"; 1st+15th is the usual approximation.
+    - cron: "0 14 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-model-snapshots
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REVIEWER: david-andrew
+      BRANCH: chore/refresh-model-snapshots
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reuse open PR branch if it merges cleanly
+        id: base
+        run: |
+          set -euo pipefail
+          git fetch origin master
+          git fetch origin "${BRANCH}" || true
+
+          reuse=false
+          if git rev-parse --verify "origin/${BRANCH}" >/dev/null 2>&1; then
+            pr_count=$(gh pr list --head "${BRANCH}" --base master --state open --json number --jq 'length')
+            if [ "${pr_count}" != "0" ]; then
+              if git merge-tree --write-tree origin/master "origin/${BRANCH}" >/dev/null 2>&1; then
+                reuse=true
+              else
+                echo "Open PR exists but conflicts with master; rebuilding from master."
+              fi
+            fi
+          fi
+
+          if [ "${reuse}" = true ]; then
+            git checkout -B "${BRANCH}" "origin/${BRANCH}"
+            git merge --no-edit origin/master
+            echo "Reusing mergeable PR branch ${BRANCH}"
+          else
+            git checkout master
+            echo "Building from master"
+          fi
+          echo "reuse=${reuse}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install fetch-script dependencies
+        run: uv sync --frozen --group dev --extra openrouter --extra litellm
+
+      - name: Upgrade litellm for freshest bundled model metadata
+        run: |
+          uv pip install --upgrade litellm
+          uv run python -c "import litellm; print('litellm', litellm.__version__)"
+
+      - name: Run fetch-models scripts
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENROUTER_API_KEY}" ]; then
+            echo "::error::Add an OPENROUTER_API_KEY repository secret so this workflow can refresh OpenRouter models."
+            exit 1
+          fi
+          if [ -z "${HF_TOKEN}" ]; then
+            echo "::warning::HF_TOKEN secret is not set; HuggingFace may rate-limit the local-models fetch."
+          fi
+          uv run toki-fetch-openrouter-models
+          uv run toki-fetch-openai-models
+          uv run toki-fetch-anthropic-models
+          uv run toki-fetch-google-models
+          uv run toki-fetch-ollama-models
+          uv run toki-fetch-local-models
+
+      - name: Detect snapshot changes
+        id: changes
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 'toki/*/models.py'; then
+            echo "No model snapshot changes versus this branch."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          git diff --stat -- 'toki/*/models.py'
+
+      - name: Write PR body
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          python3 << 'PY'
+          import os
+          import re
+          import subprocess
+          from collections import defaultdict
+          from pathlib import Path
+
+          diff = subprocess.check_output(
+              ["git", "diff", "origin/master", "--",
+               "toki/openrouter/models.py", "toki/local/models.py",
+               "toki/openai/models.py", "toki/anthropic/models.py",
+               "toki/google/models.py", "toki/ollama/models.py"],
+              text=True,
+          )
+          plus: dict[str, set[str]] = defaultdict(set)
+          minus: dict[str, set[str]] = defaultdict(set)
+          current = None
+          id_re = re.compile(r"""^[-+]    ['"]([^'"]+)['"]""")
+          for line in diff.splitlines():
+              if line.startswith("diff --git"):
+                  current = line.split(" b/")[-1]
+                  continue
+              if line.startswith("+++") or line.startswith("---"):
+                  continue
+              m = id_re.match(line)
+              if not m or current is None:
+                  continue
+              provider = current.split("/")[1]
+              (plus if line.startswith("+") else minus)[provider].add(m.group(1))
+
+          providers = ["openrouter", "openai", "anthropic", "google", "ollama", "local"]
+          lines = [
+              "## Summary",
+              "",
+              "Automated refresh of provider `models.py` snapshots.",
+              "",
+          ]
+          any_rows = False
+          for p in providers:
+              added = sorted(plus[p] - minus[p])
+              removed = sorted(minus[p] - plus[p])
+              updated = sorted(plus[p] & minus[p])
+              if not (added or removed or updated):
+                  continue
+              any_rows = True
+              bits = []
+              if added:
+                  bits.append(f"+{len(added)} added")
+              if removed:
+                  bits.append(f"-{len(removed)} removed")
+              if updated:
+                  bits.append(f"{len(updated)} attrs updated")
+              lines.append(f"- **{p}**: {', '.join(bits)}")
+              for label, ids in (("added", added), ("removed", removed)):
+                  if not ids:
+                      continue
+                  shown = ids[:30]
+                  extra = f" (+{len(ids) - 30} more)" if len(ids) > 30 else ""
+                  lines.append(f"  - {label}: {', '.join(f'`{i}`' for i in shown)}{extra}")
+          if not any_rows:
+              lines.append("- Snapshot files changed (formatting or header).")
+          lines += ["", f"@{os.environ['REVIEWER']}", ""]
+          Path("pr-body.md").write_text("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PY
+
+      - name: Commit, push, and open or update PR
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          version_gt() {
+            python3 -c "import sys; a=tuple(map(int, sys.argv[1].split('.'))); b=tuple(map(int, sys.argv[2].split('.'))); sys.exit(0 if a > b else 1)" "$1" "$2"
+          }
+          read_master_version() {
+            git show origin/master:pyproject.toml | python3 -c "import sys, re; print(re.search(r'^version = \"([^\"]+)\"', sys.stdin.read(), re.M).group(1))"
+          }
+
+          MASTER_VERSION=$(read_master_version)
+          CURRENT=$(uv version | awk '{print $2}')
+          OLD_VERSION="${CURRENT}"
+          BUMPED=false
+          if version_gt "${CURRENT}" "${MASTER_VERSION}"; then
+            echo "Branch version ${CURRENT} is still ahead of master ${MASTER_VERSION}; not bumping"
+            NEW_VERSION="${CURRENT}"
+          else
+            echo "Branch version ${CURRENT} is not ahead of master ${MASTER_VERSION}; bumping"
+            while ! version_gt "$(uv version | awk '{print $2}')" "${MASTER_VERSION}"; do
+              uv version --bump patch
+            done
+            NEW_VERSION=$(uv version | awk '{print $2}')
+            BUMPED=true
+          fi
+
+          if [ "${BUMPED}" = true ]; then
+            printf '\nPatch version bump: %s → %s. Merging this PR will trigger the PyPI publish workflow.\n' \
+              "${OLD_VERSION}" "${NEW_VERSION}" >> pr-body.md
+            TITLE="Refresh model snapshots (${OLD_VERSION} → ${NEW_VERSION})"
+            MSG="Refresh provider model snapshots (${OLD_VERSION} -> ${NEW_VERSION})"
+          else
+            printf '\nVersion left at %s (already ahead of master %s).\n' \
+              "${NEW_VERSION}" "${MASTER_VERSION}" >> pr-body.md
+            TITLE="Refresh model snapshots (${NEW_VERSION})"
+            MSG="Refresh provider model snapshots"
+          fi
+
+          git checkout -B "${BRANCH}"
+          git add -- toki/*/models.py
+          if [ "${BUMPED}" = true ]; then
+            git add -- pyproject.toml uv.lock
+          fi
+          git commit -m "${MSG}"
+
+          if [ "${{ steps.base.outputs.reuse }}" = true ]; then
+            git push origin "HEAD:${BRANCH}"
+          else
+            git push --force origin "HEAD:${BRANCH}"
+          fi
+
+          if gh pr view "${BRANCH}" --json number --jq .number >/dev/null 2>&1; then
+            gh pr edit "${BRANCH}" --title "${TITLE}" --body-file pr-body.md
+            gh pr edit "${BRANCH}" --add-reviewer "${REVIEWER}" --add-assignee "${REVIEWER}" || true
+            echo "Updated existing PR: $(gh pr view "${BRANCH}" --json url --jq .url)"
+          else
+            gh pr create \
+              --base master \
+              --head "${BRANCH}" \
+              --title "${TITLE}" \
+              --body-file pr-body.md
+            gh pr edit "${BRANCH}" --add-reviewer "${REVIEWER}" --add-assignee "${REVIEWER}" || true
+          fi

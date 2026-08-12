@@ -859,9 +859,9 @@ Each handler returns the next `State` (or `END_STATE` to terminate).
 - install all deps for dev: `uv sync --extra all`
 - Useful scripts:
   - `toki-fetch-openrouter-models` — regenerate `toki/openrouter/models.py` from the live OpenRouter API
-  - `toki-fetch-local-models` — regenerate `toki/local/models.py` from popular HuggingFace chat models
+  - `toki-fetch-local-models` — regenerate `toki/local/models.py` from `toki/local/curated.txt` (chat-compatible ids only) union top HuggingFace chat models by 30-day downloads and by all-time likes; prunes ids in neither the curated file nor those popularity sets
   - `toki-fetch-openai-models` / `toki-fetch-anthropic-models` / `toki-fetch-google-models` — regenerate the per-provider `models.py` snapshots from litellm's bundled metadata
-  - `toki-fetch-ollama-models` — regenerate `toki/ollama/models.py` by scraping the popular page of the Ollama library; merges new tags in and prunes any that have been removed from the registry
+  - `toki-fetch-ollama-models` — regenerate `toki/ollama/models.py` by scraping the popular page of the Ollama library; writes the current popular set and prunes tags that have left the registry
   - `uv version --bump <level>` where `<level>` is one of `major`, `minor`, or `patch`
 - Testing:
   - `uv run pytest` — full suite (requires every provider's API key plus a local Ollama daemon and a HuggingFace-downloadable model)

@@ -1,0 +1,35 @@
+# HuggingFace repo ids always considered for toki/local/models.py.
+# One id per line. Blank lines and `#` comments are ignored.
+#
+# Inclusion is not automatic: `_create_models_types_file` still requires a
+# tokenizer `chat_template` and a readable context size, same as the
+# popularity fetch. Incompatible ids are skipped (and printed) rather than
+# copied in. PRs to add commonly used chat models are welcome.
+
+meta-llama/Llama-3.1-8B-Instruct
+meta-llama/Llama-3.1-70B-Instruct
+meta-llama/Llama-3.3-70B-Instruct
+meta-llama/Llama-4-Scout-17B-16E-Instruct
+meta-llama/Llama-4-Maverick-17B-128E-Instruct
+google/gemma-2-2b-it
+google/gemma-2-9b-it
+google/gemma-3-4b-it
+google/gemma-3-12b-it
+google/gemma-3-27b-it
+mistralai/Mixtral-8x7B-Instruct-v0.1
+mistralai/Mistral-Nemo-Instruct-2407
+mistralai/Mistral-Small-3.1-24B-Instruct-2503
+microsoft/Phi-4-multimodal-instruct
+deepseek-ai/DeepSeek-V4-Flash
+bert-base-uncased
+roberta-base
+distilbert-base-uncased
+google/flan-t5-base
+google/flan-t5-large
+sentence-transformers/all-MiniLM-L6-v2
+BAAI/bge-large-en-v1.5
+intfloat/e5-large-v2
+openai/whisper-large-v3
+facebook/bart-large
+distilbert/distilgpt2
+EleutherAI/pythia-160m
