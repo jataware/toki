@@ -117,6 +117,12 @@ def _extract_reasoning_text(payload: OpenRouterMessagePayload | OpenRouterRespon
 class OpenRouterModel(BaseModel):
     """Toki model backend that talks to OpenRouter's chat-completions API over HTTPS.
 
+    Model ids are `provider/model` slugs (e.g. `anthropic/claude-sonnet-4`).
+    The live catalog is https://openrouter.ai/models. The snapshot bundled
+    with this install (IDE autocomplete) is `OpenRouterModelName` /
+    `toki.openrouter.list_openrouter_models`; ids outside that Literal still
+    work if OpenRouter serves them.
+
     Caching is opt-in via `cache=`:
 
       - `anthropic/*` route — `'rolling'` adds a top-level `cache_control`

@@ -228,7 +228,14 @@ class _AsyncQueueStreamer(TextStreamer):
 
 
 class LocalModel(BaseModel):
-    """Local `transformers`-backed model with the same interface as other toki backends."""
+    """Local `transformers`-backed model with the same interface as other toki backends.
+
+    `model` is a HuggingFace repo id (e.g. `Qwen/Qwen3-0.6B`). Any
+    instruction-tuned chat checkpoint with a tokenizer `chat_template` works.
+    Browse https://huggingface.co/models. The snapshot bundled with this
+    install (`LocalModelName` / `toki.local.list_huggingface_models`) is a
+    curated + popular subset for autocomplete only.
+    """
 
     def __init__(self, model: str, allow_parallel_tool_calls: bool = False):
         super().__init__()

@@ -240,6 +240,12 @@ class GoogleModel(_LiteLLMModel):
     Uses litellm's `gemini/*` provider with `GEMINI_API_KEY`. Vertex AI is a
     separate provider in litellm and is not wired up here.
 
+    Model ids match AI Studio / Gemini API names (e.g. `gemini-2.5-flash`).
+    The live catalog is https://ai.google.dev/gemini-api/docs/models. The
+    snapshot bundled with this install is `GoogleModelName` /
+    `toki.google.list_google_models`; ids outside that Literal still work if
+    AI Studio serves them.
+
     Caching is opt-in via `cache=`:
 
       - `cache='rolling'` — every turn (re)creates a `cachedContents` resource

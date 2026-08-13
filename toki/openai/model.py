@@ -8,6 +8,11 @@ from .models import OpenAIModelName, attributes_map
 class OpenAIModel(_LiteLLMModel):
     """Toki frontend for OpenAI's chat-completions API, dispatched via litellm.
 
+    Model ids match OpenAI's chat-completions names (e.g. `gpt-4o`). The live
+    catalog is https://platform.openai.com/docs/models. The snapshot bundled
+    with this install is `OpenAIModelName` / `toki.openai.list_openai_models`;
+    ids outside that Literal still work if OpenAI serves them.
+
     No `cache=` kwarg: OpenAI's prompt-prefix caching is fully automatic for
     prompts >= 1024 tokens and cannot be disabled or controlled. See the README
     Caching section for details.

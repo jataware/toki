@@ -20,6 +20,12 @@ _ANTHROPIC_MIN_CACHE_TOKENS = 1024
 class AnthropicModel(_LiteLLMModel):
     """Toki frontend for Anthropic's Claude models, dispatched via litellm.
 
+    Model ids match Anthropic's API names (e.g. `claude-sonnet-4-5`). The live
+    catalog is https://docs.anthropic.com/en/docs/about-claude/models. The
+    snapshot bundled with this install is `AnthropicModelName` /
+    `toki.anthropic.list_anthropic_models`; ids outside that Literal still
+    work if Anthropic serves them.
+
     Caching is opt-in via `cache=`:
 
       - `cache='rolling'` — every turn marks the system prompt, the last tool

@@ -78,6 +78,11 @@ def _build_usage(prompt_eval_count: int | None, eval_count: int | None) -> TokiU
 class OllamaModel(BaseModel):
     """Toki frontend for a locally-running Ollama daemon.
 
+    Model ids are Ollama library tags (e.g. `llama3.1:8b`). The live catalog
+    is https://ollama.com/library. The snapshot bundled with this install is
+    a popular subset (`OllamaModelName` / `toki.ollama.list_ollama_models`);
+    any tag the daemon can pull works.
+
     On construction, checks whether `model` is already pulled and pulls it (with a
     tqdm progress bar) if not. Subsequent `complete()` / `acomplete()` calls go to
     the daemon's `/api/chat` endpoint via the official `ollama` python client.
