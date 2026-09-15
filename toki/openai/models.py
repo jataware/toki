@@ -6,7 +6,11 @@ from dataclasses import dataclass
 
 
 OpenAIModelName = Literal[
+    'chat-latest',
     'chatgpt-4o-latest',
+    'computer-use-preview',
+    'daybreak-blue-latest',
+    'daybreak-red-latest',
     'gpt-3.5-turbo',
     'gpt-3.5-turbo-0125',
     'gpt-3.5-turbo-1106',
@@ -66,9 +70,11 @@ OpenAIModelName = Literal[
     'gpt-5.5',
     'gpt-5.5-2026-04-23',
     'gpt-5.6',
+    'gpt-5.6-cyber',
     'gpt-5.6-luna',
     'gpt-5.6-sol',
     'gpt-5.6-terra',
+    'gpt-6-astra',
     'gpt-audio',
     'gpt-audio-1.5',
     'gpt-audio-2025-08-28',
@@ -95,7 +101,11 @@ class Attr:
 
 
 attributes_map: dict[OpenAIModelName, Attr] = {
+    "chat-latest":                                              Attr(context_size=400000, supports_tools=True, supports_thinking=True),
     "chatgpt-4o-latest":                                        Attr(context_size=128000, supports_tools=True, supports_thinking=False),
+    "computer-use-preview":                                     Attr(context_size=8192, supports_tools=True, supports_thinking=True),
+    "daybreak-blue-latest":                                     Attr(context_size=1050000, supports_tools=True, supports_thinking=True),
+    "daybreak-red-latest":                                      Attr(context_size=400000, supports_tools=True, supports_thinking=True),
     "gpt-3.5-turbo":                                            Attr(context_size=16385, supports_tools=True, supports_thinking=False),
     "gpt-3.5-turbo-0125":                                       Attr(context_size=16385, supports_tools=True, supports_thinking=False),
     "gpt-3.5-turbo-1106":                                       Attr(context_size=16385, supports_tools=True, supports_thinking=False),
@@ -154,10 +164,12 @@ attributes_map: dict[OpenAIModelName, Attr] = {
     "gpt-5.4-nano-2026-03-17":                                  Attr(context_size=272000, supports_tools=True, supports_thinking=True),
     "gpt-5.5":                                                  Attr(context_size=1050000, supports_tools=True, supports_thinking=True),
     "gpt-5.5-2026-04-23":                                       Attr(context_size=1050000, supports_tools=True, supports_thinking=True),
-    "gpt-5.6":                                                  Attr(context_size=1050000, supports_tools=True, supports_thinking=True),
-    "gpt-5.6-luna":                                             Attr(context_size=1050000, supports_tools=True, supports_thinking=True),
-    "gpt-5.6-sol":                                              Attr(context_size=1050000, supports_tools=True, supports_thinking=True),
-    "gpt-5.6-terra":                                            Attr(context_size=1050000, supports_tools=True, supports_thinking=True),
+    "gpt-5.6":                                                  Attr(context_size=922000, supports_tools=True, supports_thinking=True),
+    "gpt-5.6-cyber":                                            Attr(context_size=400000, supports_tools=True, supports_thinking=True),
+    "gpt-5.6-luna":                                             Attr(context_size=922000, supports_tools=True, supports_thinking=True),
+    "gpt-5.6-sol":                                              Attr(context_size=922000, supports_tools=True, supports_thinking=True),
+    "gpt-5.6-terra":                                            Attr(context_size=922000, supports_tools=True, supports_thinking=True),
+    "gpt-6-astra":                                              Attr(context_size=922000, supports_tools=True, supports_thinking=True),
     "gpt-audio":                                                Attr(context_size=128000, supports_tools=True, supports_thinking=False),
     "gpt-audio-1.5":                                            Attr(context_size=128000, supports_tools=True, supports_thinking=False),
     "gpt-audio-2025-08-28":                                     Attr(context_size=128000, supports_tools=True, supports_thinking=False),
