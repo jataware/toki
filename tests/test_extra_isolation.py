@@ -2,7 +2,9 @@
 
 `toki[openrouter]` in particular must be able to import `OpenRouterModel`
 without litellm (which belongs to `toki[openai]` / `toki[anthropic]` /
-`toki[google]`).
+`toki[google]`). `toki[openai-responses]` uses the official openai SDK
+and must import `OpenAIResponsesModel` without litellm. `toki[openai]`
+is Completions via litellm and must not load the Responses frontend.
 """
 
 import sys
@@ -44,6 +46,27 @@ def test_openrouter_imports_without_litellm(no_litellm):
     assert 'toki.litellm.model' not in sys.modules
     model = OpenRouterModel("anthropic/claude-3.5-haiku", api_key="dummy")
     assert model.model == "anthropic/claude-3.5-haiku"
+
+
+def test_openai_responses_imports_without_litellm(no_litellm):
+    from toki import OpenAIResponsesModel
+
+    assert 'toki.litellm' not in sys.modules
+    model = OpenAIResponsesModel("gpt-5.4-nano", api_key="dummy")
+    assert model.model == "gpt-5.4-nano"
+
+
+def test_openai_completions_does_not_load_responses():
+    _unload_backends()
+    try:
+        from toki import OpenAIModel
+
+        model = OpenAIModel("gpt-4o-mini", api_key="dummy")
+        assert model.model == "gpt-4o-mini"
+        assert 'toki.openai.responses' not in sys.modules
+        assert 'toki.openai.responses_wire' not in sys.modules
+    finally:
+        _unload_backends()
 
 
 def test_anthropic_utils_import_without_litellm(no_litellm):

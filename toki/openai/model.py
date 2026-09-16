@@ -13,6 +13,9 @@ class OpenAIModel(_LiteLLMModel):
     with this install is `OpenAIModelName` / `toki.openai.list_openai_models`;
     ids outside that Literal still work if OpenAI serves them.
 
+    Extra: `toki[openai]` (Chat Completions via litellm). For the Responses
+    API frontend see `OpenAIResponsesModel` / `toki[openai-responses]`.
+
     No `cache=` kwarg: OpenAI's prompt-prefix caching is fully automatic for
     prompts >= 1024 tokens and cannot be disabled or controlled. See the README
     Caching section for details.

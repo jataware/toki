@@ -1,6 +1,6 @@
 [project]
 name = "toki"
-version = "1.4.0"
+version = "1.5.0"
 description = "Minimal universal LLM interface API"
 readme = "README.md"
 authors = [
@@ -16,11 +16,12 @@ openrouter = ["requests>=2.32.5", "httpx>=0.27"]
 local = ["torch>=2.0", "transformers>=4.40"]
 litellm = ["litellm>=1.52"]
 openai = ["toki[litellm]"]
+"openai-responses" = ["openai>=1.66.0", "tiktoken"]
 google = ["toki[litellm]", "google-genai>=1.0"]
 anthropic = ["toki[litellm]"]
 ollama = ["ollama>=0.6", "tqdm>=4"]
 bedrock = ["boto3>=1.43"]
-all = ["toki[openrouter,local,openai,google,anthropic,ollama,bedrock]"]
+all = ["toki[openrouter,local,openai,openai-responses,google,anthropic,ollama,bedrock]"]
 
 [project.urls]
 "Repository" = "https://github.com/jataware/toki"

@@ -1,12 +1,12 @@
 """Cartesian backend coverage for `BaseModel.complete()`.
 
 Parameter axes:
-  - provider:          openrouter, openai, anthropic, google, local
+  - provider:          openrouter, openai, openai_responses, anthropic, google, local, ollama
   - stream:            False (block) | True (stream)
   - capture_thinking:  False (nothink) | True (think)
   - tools_shape:       none | static | streaming | mixed
 
-5 x 2 x 2 x 4 = 80 cases. Tests with `capture_thinking=True` are skipped for
+7 providers × 2 × 2 × 4, with `capture_thinking=True` skipped for
 providers whose `MODELS[<provider>]["reasoning"]` is `None`.
 
 Tool tests use a fixed sentinel argument so the model is instructed to call the
@@ -35,7 +35,7 @@ from .conftest import (
 )
 
 
-PROVIDERS = ["openrouter", "openai", "anthropic", "google", "local", "ollama"]
+PROVIDERS = ["openrouter", "openai", "openai_responses", "anthropic", "google", "local", "ollama"]
 TOOLS_SHAPES = ["none", "static", "streaming", "mixed"]
 
 

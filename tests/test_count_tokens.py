@@ -120,6 +120,31 @@ def test_openai_count_tokens_unsupported_kind():
         model.count_tokens(SHORT_MESSAGES, kind="online")  # type: ignore[arg-type]
 
 
+# ----- OpenAIResponsesModel -------------------------------------------------
+
+def test_openai_responses_count_tokens_exact():
+    model = make_model("openai_responses", reasoning=False)
+    n = model.count_tokens(SHORT_MESSAGES)
+    assert isinstance(n, int)
+    assert n > 0
+
+
+def test_openai_responses_count_tokens_with_tools_increases_count():
+    model = make_model("openai_responses", reasoning=False)
+    base = model.count_tokens(SHORT_MESSAGES)
+    with_tools = model.count_tokens(
+        SHORT_MESSAGES,
+        tools=[make_static_schema("record_value", "value")],
+    )
+    assert with_tools > base
+
+
+def test_openai_responses_count_tokens_unsupported_kind():
+    model = make_model("openai_responses", reasoning=False)
+    with pytest.raises(ValueError):
+        model.count_tokens(SHORT_MESSAGES, kind="online")  # type: ignore[arg-type]
+
+
 # ----- AnthropicModel -------------------------------------------------------
 
 def test_anthropic_count_tokens_offline():

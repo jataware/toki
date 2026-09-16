@@ -2655,7 +2655,7 @@ wheels = [
 
 [[package]]
 name = "toki"
-version = "1.4.0"
+version = "1.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "typing-extensions" },
@@ -2668,7 +2668,9 @@ all = [
     { name = "httpx" },
     { name = "litellm" },
     { name = "ollama" },
+    { name = "openai" },
     { name = "requests" },
+    { name = "tiktoken" },
     { name = "torch" },
     { name = "tqdm" },
     { name = "transformers" },
@@ -2697,6 +2699,10 @@ ollama = [
 openai = [
     { name = "litellm" },
 ]
+openai-responses = [
+    { name = "openai" },
+    { name = "tiktoken" },
+]
 openrouter = [
     { name = "httpx" },
     { name = "requests" },
@@ -2721,17 +2727,19 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'openrouter'", specifier = ">=0.27" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.52" },
     { name = "ollama", marker = "extra == 'ollama'", specifier = ">=0.6" },
+    { name = "openai", marker = "extra == 'openai-responses'", specifier = ">=1.66.0" },
     { name = "requests", marker = "extra == 'openrouter'", specifier = ">=2.32.5" },
+    { name = "tiktoken", marker = "extra == 'openai-responses'" },
     { name = "toki", extras = ["litellm"], marker = "extra == 'anthropic'" },
     { name = "toki", extras = ["litellm"], marker = "extra == 'google'" },
     { name = "toki", extras = ["litellm"], marker = "extra == 'openai'" },
-    { name = "toki", extras = ["openrouter", "local", "openai", "google", "anthropic", "ollama", "bedrock"], marker = "extra == 'all'" },
+    { name = "toki", extras = ["openrouter", "local", "openai", "openai-responses", "google", "anthropic", "ollama", "bedrock"], marker = "extra == 'all'" },
     { name = "torch", marker = "extra == 'local'", specifier = ">=2.0" },
     { name = "tqdm", marker = "extra == 'ollama'", specifier = ">=4" },
     { name = "transformers", marker = "extra == 'local'", specifier = ">=4.40" },
     { name = "typing-extensions", specifier = ">=4.15.0" },
 ]
-provides-extras = ["openrouter", "local", "litellm", "openai", "google", "anthropic", "ollama", "bedrock", "all"]
+provides-extras = ["openrouter", "local", "litellm", "openai", "openai-responses", "google", "anthropic", "ollama", "bedrock", "all"]
 
 [package.metadata.requires-dev]
 dev = [

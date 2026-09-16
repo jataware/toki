@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .openrouter import OpenRouterModel, OpenRouterModelName, get_openrouter_api_key
     from .local import LocalModel, LocalModelName
-    from .openai import OpenAIModel, OpenAIModelName, get_openai_api_key
+    from .openai import OpenAIModel, OpenAIModelName, OpenAIResponsesModel, get_openai_api_key
     from .anthropic import AnthropicModel, AnthropicModelName, get_anthropic_api_key
     from .google import GoogleModel, GoogleModelName, get_google_api_key
     from .ollama import OllamaModel, OllamaModelName
@@ -63,8 +63,9 @@ _LAZY: dict[str, tuple[str, str]] = {
     'get_openrouter_api_key': ('toki.openrouter', 'get_openrouter_api_key'),
     'LocalModel': ('toki.local', 'LocalModel'),
     'LocalModelName': ('toki.local', 'LocalModelName'),
-    'OpenAIModel': ('toki.openai', 'OpenAIModel'),
+    'OpenAIModel': ('toki.openai.model', 'OpenAIModel'),
     'OpenAIModelName': ('toki.openai', 'OpenAIModelName'),
+    'OpenAIResponsesModel': ('toki.openai.responses', 'OpenAIResponsesModel'),
     'get_openai_api_key': ('toki.openai', 'get_openai_api_key'),
     'AnthropicModel': ('toki.anthropic', 'AnthropicModel'),
     'AnthropicModelName': ('toki.anthropic', 'AnthropicModelName'),
@@ -138,6 +139,7 @@ __all__ = [
     'LocalModelName',
     'OpenAIModel',
     'OpenAIModelName',
+    'OpenAIResponsesModel',
     'get_openai_api_key',
     'AnthropicModel',
     'AnthropicModelName',

@@ -30,7 +30,8 @@ Backend deps are split into extras. Install only what you need:
 ```bash
 pip install 'toki[ollama]'         # local models via a running Ollama daemon
 pip install 'toki[openrouter]'     # OpenRouter HTTP API
-pip install 'toki[openai]'         # OpenAI (via litellm)
+pip install 'toki[openai]'              # OpenAI Chat Completions (via litellm)
+pip install 'toki[openai-responses]'    # OpenAI Responses API (official SDK)
 pip install 'toki[anthropic]'      # Anthropic Claude (via litellm)
 pip install 'toki[google]'         # Google Gemini AI Studio (via litellm)
 pip install 'toki[bedrock]'        # Amazon Bedrock Runtime via boto3
@@ -123,12 +124,13 @@ print(result)
 | Ollama      | `OllamaModel`     | `toki[ollama]`     | local Ollama daemon (auto-pulls models) | none (or `host=`)     |
 | OpenRouter  | `OpenRouterModel` | `toki[openrouter]` | OpenRouter HTTP API                     | `OPENROUTER_API_KEY`  |
 | OpenAI      | `OpenAIModel`     | `toki[openai]`     | OpenAI Chat Completions (via litellm)   | `OPENAI_API_KEY`      |
+| OpenAI      | `OpenAIResponsesModel` | `toki[openai-responses]` | OpenAI Responses API (official SDK) | `OPENAI_API_KEY`      |
 | Anthropic   | `AnthropicModel`  | `toki[anthropic]`  | Anthropic Messages (via litellm)        | `ANTHROPIC_API_KEY`   |
 | Google      | `GoogleModel`     | `toki[google]`     | Gemini AI Studio (via litellm)          | `GEMINI_API_KEY`      |
 | Bedrock     | `BedrockModel`    | `toki[bedrock]`    | Amazon Bedrock Converse                 | AWS chain or `AWS_BEARER_TOKEN_BEDROCK` |
 | HuggingFace | `LocalModel`      | `toki[local]`      | local `transformers` + `torch`          | none                  |
 
-All seven implement `toki.BaseModel`, so the same code works across all of them. The minimal "say hello in 5 words" demo for each:
+All of these implement `toki.BaseModel`, so the same code works across them. The minimal "say hello in 5 words" demo for each:
 ```python
 ########################### Ollama ###########################
 from toki import Agent, OllamaModel
@@ -155,6 +157,15 @@ model = OpenAIModel("gpt-5.4-mini", api_key=get_openai_api_key())
 agent = Agent(model)
 agent.add_user_message("Say hello in 5 words")
 print(f'openai says {agent.execute()}')
+
+
+########################### OpenAI Responses ###########################
+from toki import Agent, OpenAIResponsesModel, get_openai_api_key
+
+model = OpenAIResponsesModel("gpt-5.4-mini", api_key=get_openai_api_key())
+agent = Agent(model)
+agent.add_user_message("Say hello in 5 words")
+print(f'openai responses says {agent.execute()}')
 
 
 ########################### Anthropic ###########################
@@ -238,7 +249,7 @@ Set `BEDROCK_REASONING_TEST_MODEL` and `BEDROCK_TOOL_TEST_MODEL` to include the 
 
 ### Notes:
 - `OllamaModel` checks whether the requested tag is already pulled and, if not, pulls it before returning. Subsequent constructions skip straight to the chat.
-- The litellm-backed frontends (`OpenAIModel`, `AnthropicModel`, `GoogleModel`) and `OpenRouterModel` all accept `reasoning_effort` (see [Capturing Thinking](#capturing-thinking)) and `allow_parallel_tool_calls`. `AnthropicModel`, `GoogleModel`, and `OpenRouterModel` additionally take `cache=` (see [Caching](#caching)) — `OpenAIModel`, `OllamaModel`, and `LocalModel` don't, since their cache behavior isn't user-controllable.
+- The litellm-backed frontends (`OpenAIModel`, `AnthropicModel`, `GoogleModel`), `OpenRouterModel`, and `OpenAIResponsesModel` all accept `reasoning_effort` (see [Capturing Thinking](#capturing-thinking)) and `allow_parallel_tool_calls`. `AnthropicModel`, `GoogleModel`, and `OpenRouterModel` additionally take `cache=` (see [Caching](#caching)) — `OpenAIModel`, `OpenAIResponsesModel`, `OllamaModel`, and `LocalModel` don't, since their cache behavior isn't user-controllable.
 - `BedrockModel` accepts any foundation-model ID, inference-profile ID, or corresponding ARN. `BedrockModelName` provides a generated autocomplete snapshot, while arbitrary strings remain valid because availability is regional and account-dependent.
 - Bedrock Converse has no provider-neutral switch for parallel tool use. `BedrockModel(..., allow_parallel_tool_calls=True)` tells Toki to accept multiple `toolUse` blocks without an invariant warning; whether the selected model emits them remains model-specific.
 - Toki targets instruction-tuned chat models — anything that ships a tokenizer `chat_template` (Qwen-Instruct, Llama-Instruct, Gemma-`-it`, etc.). Base / pretrained-only checkpoints aren't supported; for raw text continuation, use `transformers` directly.
@@ -303,14 +314,14 @@ Most user code lives at the `Agent` layer. The `BaseModel` layer is there for di
 
 Reasoning models (OpenAI o-series, Anthropic Claude with thinking, DeepSeek-R1, QwQ, Qwen3 thinking variants, etc.) produce internal "thinking" before their final answer. By default toki strips this — your stream stays a clean stream of answer text. Pass `capture_thinking=True` to surface it as `TokiThinking` chunks (streaming) or as a `thought` field on the response object (blocking).
 
-`capture_thinking=True` is sufficient on its own to engage server-side reasoning at a medium effort default on reasoning-capable provider-specific backends (`AnthropicModel`, `GoogleModel`, `OpenRouterModel`, `OpenAIModel`, and known `BedrockModel` families). Pair it with `reasoning_effort=...` on the model constructor when you want a non-medium level. `OpenAIModel` is the exception: server-side reasoning still engages, but the chain text isn't reliably surfaced.
+`capture_thinking=True` is sufficient on its own to engage server-side reasoning at a medium effort default on reasoning-capable provider-specific backends (`AnthropicModel`, `GoogleModel`, `OpenRouterModel`, `OpenAIModel`, `OpenAIResponsesModel`, and known `BedrockModel` families). Pair it with `reasoning_effort=...` on the model constructor when you want a non-medium level. `OpenAIModel` (Chat Completions) is the exception: server-side reasoning still engages, but the chain text isn't reliably surfaced. Use `OpenAIResponsesModel` when you need tools combined with `reasoning_effort` on GPT-5.4+.
 
 Setting `capture_thinking=True` emits a one-shot `TokiThinkingSupportWarning` in two cases:
 
 - The model's `attributes_map[<id>].supports_thinking` is `False` — the model definitely won't produce thinking text regardless of how reasoning is configured.
 - The model's thinking support cannot be verified (model id absent from `attributes_map`, or — as on `LocalModel` always — the backend's `Attr` deliberately doesn't carry the field). It might or might not produce thought text.
 
-The `supports_thinking` flag is populated on `OllamaModel`, `AnthropicModel`, `GoogleModel`, `OpenAIModel`, and `OpenRouterModel` (sourced from `litellm.model_cost.supports_reasoning` for the litellm-backed frontends and from `supported_parameters` on the OpenRouter `/models` endpoint). For local models, verify support yourself; once verified, silence the warning via [Warnings](#warnings).
+The `supports_thinking` flag is populated on `OllamaModel`, `AnthropicModel`, `GoogleModel`, `OpenAIModel`, `OpenAIResponsesModel`, and `OpenRouterModel` (sourced from `litellm.model_cost.supports_reasoning` for the litellm-backed frontends and from `supported_parameters` on the OpenRouter `/models` endpoint). For local models, verify support yourself; once verified, silence the warning via [Warnings](#warnings).
 
 Streaming:
 ```python
@@ -357,7 +368,8 @@ How `capture_thinking=True` plumbs through to each provider:
 - **Ollama** — sets the daemon's native `think` parameter. Works for thinking-flagged models in [toki/ollama/models.py](toki/ollama/models.py) (`qwen3:*`, `deepseek-r1:*`, `gpt-oss:*`, `qwq:*`); ignored on non-thinking models.
 - **OpenRouter** — sends `reasoning: {effort: reasoning_effort}` when the ctor `reasoning_effort` is set; otherwise sends `reasoning: {enabled: true}` (medium effort) when `capture_thinking=True`. User-provided `reasoning={...}` via kwargs always wins.
 - **Anthropic / Google** (litellm) — reliably stream thoughts back as `reasoning_content` deltas. `capture_thinking=True` alone now auto-engages `reasoning_effort='medium'` server-side; an explicit `reasoning_effort` on the constructor overrides; an explicit `thinking={...}` kwarg overrides both.
-- **OpenAI** (litellm) — *unreliable.* `capture_thinking=True` engages reasoning server-side (improving answer quality at higher effort), but OpenAI's Chat Completions endpoint doesn't return reasoning text at all, and the Responses API summaries are emitted only sporadically (especially when the response is a tool call). Toki emits a one-shot `TokiThinkingSupportWarning` to flag this when you opt in.
+- **OpenAI** (litellm Chat Completions) — *unreliable.* `capture_thinking=True` engages reasoning server-side (improving answer quality at higher effort), but OpenAI's Chat Completions endpoint doesn't return reasoning text at all. Toki emits a one-shot `TokiThinkingSupportWarning` to flag this when you opt in. Use `OpenAIResponsesModel` for tools + reasoning and for summary text when the model emits it.
+- **OpenAI Responses** — `OpenAIResponsesModel` sends `reasoning.effort` (medium when `capture_thinking=True` alone) and `include=["reasoning.encrypted_content"]` so reasoning items can round-trip on tool turns via `provider_state`. Summary text is surfaced as `thought` / `TokiThinking` when present.
 - **Bedrock** — maps the common `reasoning_effort` knob to each known Converse family. `capture_thinking=True` uses medium when neither `reasoning_effort` nor `reasoning_config` is set. Complete signed and redacted reasoning blocks are retained opaquely on every assistant turn and replayed by `Agent`, even when thought text is not surfaced.
 - **Local** (transformers) — parses inline `<think>...</think>` tags inside the model's chat-template output.
 
@@ -387,10 +399,11 @@ model = BedrockModel(
 
 ### Reasoning effort
 
-The litellm-backed frontends (`OpenAIModel`, `AnthropicModel`, `GoogleModel`) and `OpenRouterModel` all accept a `reasoning_effort` knob that controls how much the *server* thinks. It's independent of `capture_thinking` (which controls whether thoughts are surfaced to the *caller*) — you can mix and match.
+The litellm-backed frontends (`OpenAIModel`, `AnthropicModel`, `GoogleModel`), `OpenRouterModel`, and `OpenAIResponsesModel` all accept a `reasoning_effort` knob that controls how much the *server* thinks. It's independent of `capture_thinking` (which controls whether thoughts are surfaced to the *caller*) — you can mix and match.
 
 ```python
 OpenAIModel("gpt-5.4",                      api_key=..., reasoning_effort="high")
+OpenAIResponsesModel("gpt-5.4",             api_key=..., reasoning_effort="high")
 AnthropicModel("claude-sonnet-4-5",         api_key=..., reasoning_effort="medium")
 GoogleModel("gemini-2.5-pro",               api_key=..., reasoning_effort="low")
 OpenRouterModel("anthropic/claude-sonnet-4-5", api_key=..., reasoning_effort="high")
@@ -455,6 +468,7 @@ This drops the anchor history. The next `'static'` call defers until the new pre
 | **OpenRouterModel** | `'rolling' \| 'static' \| None` | `None` | Routed by model-id prefix. `anthropic/*` rolling sets a top-level `cache_control` on the latest user message (engages caching but, like native Anthropic, doesn't read prior turns' entries — use `'static'` for reads); `anthropic/*` static places explicit per-block markers at the snapshot anchor; `google/*` places a single marker at the latest user (rolling) or anchor (static), and Gemini's prefix-matching lookup *does* produce reads in both modes. Other prefixes warn at construction. `cache_ttl` only applies on the anthropic route. |
 | **BedrockModel** | `'rolling' \| 'static' \| None` | `None` | Inserts a Converse `cachePoint` only when the bundled model capabilities say Converse explicit caching is supported. Placement, minimum tokens, and `'5m'`/`'1h'` TTL support are model-specific. Unsupported or unknown models emit `TokiCacheWarning` and continue without a marker. Implicit caching remains active independently and is reported in usage. |
 | **OpenAIModel** | *(absent)* | n/a | OpenAI's prompt-prefix cache is fully automatic for prompts ≥ 1024 tokens and cannot be disabled or controlled — toki has nothing to add at the wire level. |
+| **OpenAIResponsesModel** | *(absent)* | n/a | Same automatic prefix cache as Chat Completions. Toki always sends `store=False`; conversation state stays on `Agent.messages`, not `previous_response_id`. |
 | **OllamaModel** | *(absent)* | n/a | The Ollama daemon does prefix KV-cache reuse on its own across sequential calls; toki has nothing to add. |
 | **LocalModel** | *(absent)* | n/a | Cross-call KV-cache reuse isn't implemented yet; would need a `past_key_values` tensor held across calls plus invalidation logic for any history mutation. |
 
@@ -502,6 +516,7 @@ Backends raise `ValueError` for an unsupported `kind`. The `safety_factor` kwarg
 | `LocalModel` | exact via `tokenizer.apply_chat_template(...)` | (raises) | (raises) |
 | `OllamaModel` | exact via daemon's `prompt_eval_count` (round-trip to localhost) | (raises) | (raises) |
 | `OpenAIModel` | exact via `litellm.token_counter` (tiktoken — exact for OpenAI) | (raises) | (raises) |
+| `OpenAIResponsesModel` | exact via tiktoken over the converted Responses `input` JSON (offline; `o200k_base` when the model id is unknown to tiktoken) | (raises) | (raises) |
 | `AnthropicModel` | exact, online via a `max_tokens=1` chat completion (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
 | `GoogleModel` | exact, online via a `max_tokens=1` chat completion (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
 | `OpenRouterModel` | exact, online via a `max_tokens=1` `chat/completions` round-trip (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` keyed off the upstream model id | same as `'exact'` |
@@ -747,7 +762,7 @@ Once the generator is exhausted the assistant turn (content + any tool calls) ha
 
 Toki surfaces common misconfigurations and surprising runtime behaviors as `UserWarning`s rather than exceptions. All of them inherit from `toki.TokiWarning`, with four subclasses partitioning the surface:
 
-- **`TokiThinkingSupportWarning`** — `capture_thinking=True` on a model whose `attributes_map[<id>].supports_thinking` is `False`, on a model whose thinking support can't be verified (model id absent from the map, or — on `LocalModel` always — the backend's `Attr` doesn't carry the field), or on an OpenAI model (whose chat-completions endpoint doesn't reliably surface reasoning text). One-shot per model instance.
+- **`TokiThinkingSupportWarning`** — `capture_thinking=True` on a model whose `attributes_map[<id>].supports_thinking` is `False`, on a model whose thinking support can't be verified (model id absent from the map, or — on `LocalModel` always — the backend's `Attr` doesn't carry the field), or on `OpenAIModel` (Chat Completions does not reliably surface reasoning text). One-shot per model instance. `OpenAIResponsesModel` uses the normal attributes_map check.
 - **`TokiToolMismatchWarning`** — runtime mismatch between what was configured and what the model emitted: tool calls produced when `tools=None`, tool-call names not in the provided schemas, multiple tool calls when `allow_parallel_tool_calls=False`, `Agent(tools=...)` paired with a model whose `attributes_map` says `supports_tools=False`, or `Agent.add_tool_message(tool_call_id=...)` with an id that doesn't match any pending tool call. The runtime-response checks warn per occurrence; the agent-construction checks are one-shot.
 - **`TokiCacheWarning`** — caching behavior likely to surprise: `cache='rolling'` on Anthropic-route models (engages caching every turn but doesn't reliably produce cache reads on Claude), history mutation invalidating a `'static'` anchor, explicit-cache creation failure on Gemini, OpenRouter caching on a provider that doesn't honor breakpoints.
 - **`TokiBackendQuirkWarning`** — informational notices about backend-specific quirks (e.g. Ollama emitting full tool calls instead of per-character argument deltas).
@@ -871,6 +886,7 @@ The base class handles everything else:
 Reference implementations:
 - [toki/openrouter/model.py](toki/openrouter/model.py) — direct HTTP, smallest reference.
 - [toki/litellm/model.py](toki/litellm/model.py) — wraps litellm; shared base for `OpenAIModel` / `AnthropicModel` / `GoogleModel`.
+- [toki/openai/responses.py](toki/openai/responses.py) — OpenAI Responses API via the official SDK; reasoning items round-trip in `provider_state`.
 - [toki/ollama/model.py](toki/ollama/model.py) — wraps the official `ollama` python client; demonstrates synthesizing a single-fragment tool-call delta for providers that emit whole tool calls.
 - [toki/local/transformers.py](toki/local/transformers.py) — fully local; demonstrates inline `<think>` tag parsing and `<tool_call>` envelope extraction without the help of a structured streaming protocol.
 

@@ -46,15 +46,14 @@ def pytest_configure(config: pytest.Config) -> None:
 # calls and reasoning via its chat template, so the same Qwen entry serves as
 # both default and reasoning for the local backend.
 #
-# OpenAI's `reasoning` is intentionally `None`: even via the Responses API
-# bridge with `reasoning_summary='detailed'`, gpt-5.4-nano/mini emit
-# `reasoning_content` only sporadically (especially when a tool call is the
-# response). Server-side reasoning still works (`OpenAIModel(...,
-# reasoning_effort=...)` is exposed), but we can't reliably assert on captured
-# thoughts so the corresponding `capture_thinking=True` tests are skipped.
+# OpenAI Chat Completions (`openai`) cannot reliably surface thought text, so
+# `reasoning` is None. `openai_responses` is the Responses-API frontend: tools
+# plus reasoning_effort work, but summary text on tool-call turns is still too
+# sporadic to assert on in the cartesian suite.
 MODELS: dict[str, dict[str, str | None]] = {
     "openrouter": {"default": "anthropic/claude-haiku-4.5",   "reasoning": "anthropic/claude-sonnet-4.5"},
     "openai":     {"default": "gpt-5.4-nano",                 "reasoning": None},
+    "openai_responses": {"default": "gpt-5.4-nano",           "reasoning": None},
     "anthropic":  {"default": "claude-haiku-4-5",             "reasoning": "claude-sonnet-4-5"},
     "google":     {"default": "gemini-2.5-flash",             "reasoning": "gemini-2.5-flash"},
     "local":      {"default": "Qwen/Qwen3-1.7B",              "reasoning": "Qwen/Qwen3-1.7B"},
@@ -71,6 +70,7 @@ SENTINEL_TEXT = "banana"
 _HOSTED_PROVIDER_CONFIG: dict[str, tuple[str, str]] = {
     "openrouter": ("OPENROUTER_API_KEY", "OpenRouterModel"),
     "openai":     ("OPENAI_API_KEY",     "OpenAIModel"),
+    "openai_responses": ("OPENAI_API_KEY", "OpenAIResponsesModel"),
     "anthropic":  ("ANTHROPIC_API_KEY",  "AnthropicModel"),
     "google":     ("GEMINI_API_KEY",     "GoogleModel"),
 }
@@ -79,7 +79,7 @@ _HOSTED_PROVIDER_CONFIG: dict[str, tuple[str, str]] = {
 # litellm-backed backends accept a `reasoning_effort` init param. The
 # OpenRouter and local backends drive reasoning through `capture_thinking` alone,
 # so we don't forward it to them.
-_REASONING_EFFORT_PROVIDERS: set[str] = {"openai", "anthropic", "google"}
+_REASONING_EFFORT_PROVIDERS: set[str] = {"openai", "openai_responses", "anthropic", "google"}
 
 
 def make_model(provider: str, *, reasoning: bool):
