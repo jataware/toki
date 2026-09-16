@@ -18,6 +18,7 @@ _BACKEND_PREFIXES = (
     'toki.google',
     'toki.ollama',
     'toki.local',
+    'toki.bedrock',
 )
 
 
@@ -52,6 +53,30 @@ def test_anthropic_utils_import_without_litellm(no_litellm):
     assert callable(get_anthropic_api_key)
     assert 'toki.anthropic.model' not in sys.modules
     assert 'toki.litellm.model' not in sys.modules
+
+
+@pytest.fixture
+def no_boto3(monkeypatch):
+    _unload_backends()
+    monkeypatch.setitem(sys.modules, 'boto3', None)
+    yield
+    _unload_backends()
+
+
+def test_bedrock_utils_import_without_boto3(no_boto3):
+    from toki.bedrock import (
+        ClaudeAdaptiveReasoning,
+        get_bedrock_api_key,
+        list_bedrock_models,
+    )
+    from toki.bedrock.fetch_models import _fetch_models
+
+    assert callable(get_bedrock_api_key)
+    assert callable(list_bedrock_models)
+    assert callable(_fetch_models)
+    assert ClaudeAdaptiveReasoning().effort == "medium"
+    assert 'toki.bedrock.model' not in sys.modules
+    assert 'toki.bedrock.discovery' not in sys.modules
 
 
 @pytest.fixture

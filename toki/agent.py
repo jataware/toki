@@ -1,5 +1,6 @@
 import warnings
-from typing import Any, AsyncGenerator, Coroutine, Generator, Generic, Literal, Sequence, TypeVar, cast, overload
+from collections.abc import AsyncGenerator, Coroutine, Generator, Sequence
+from typing import Any, Generic, Literal, TypeVar, cast, overload
 
 from .model import (
     AsyncTokiToolCallStream,
@@ -73,29 +74,54 @@ class Agent(Generic[ToolsShape]):
                     )
 
     @overload
-    def add_message(self, *, role: Role, content: str): ...
+    def add_message(self, *, role: Role, content: str, provider_state: dict[str, Any] | None = None): ...
     @overload
-    def add_message(self, *, role: Role, content: str, tool_call_id: str): ...
+    def add_message(self, *, role: Role, content: str, tool_call_id: str, provider_state: dict[str, Any] | None = None): ...
     @overload
-    def add_message(self, *, role: Role, content: str, tool_calls: list[TokiToolCall | dict]): ...
-    def add_message(self, *, role: Role, content: str, tool_calls: list[TokiToolCall | dict] | None = None, tool_call_id: str | None = None):
+    def add_message(self, *, role: Role, content: str, tool_calls: list[TokiToolCall | dict], provider_state: dict[str, Any] | None = None): ...
+    def add_message(
+        self,
+        *,
+        role: Role,
+        content: str,
+        tool_calls: list[TokiToolCall | dict] | None = None,
+        tool_call_id: str | None = None,
+        provider_state: dict[str, Any] | None = None,
+    ):
         assert tool_calls is None or tool_call_id is None, "tool_calls and tool_call_id cannot both be provided"
         if tool_calls:
-            message = TokiMessage(role=role, content=content, tool_calls=[TokiToolCall.from_dict(tc) for tc in tool_calls])
+            message = TokiMessage(
+                role=role,
+                content=content,
+                tool_calls=[TokiToolCall.from_dict(tc) for tc in tool_calls],
+                provider_state=provider_state,
+            )
         elif tool_call_id:
             message = TokiMessage(role=role, content=content, tool_call_id=tool_call_id)
         else:
-            message = TokiMessage(role=role, content=content)
+            message = TokiMessage(role=role, content=content, provider_state=provider_state)
         self.messages.append(message)
 
     def add_user_message(self, content: str):
         self.add_message(role='user', content=content)
 
-    def add_assistant_message(self, content: str):
-        self.add_message(role='assistant', content=content)
+    def add_assistant_message(self, content: str, *, provider_state: dict[str, Any] | None = None):
+        self.add_message(role='assistant', content=content, provider_state=provider_state)
 
-    def add_assistant_tool_calls(self: 'Agent[WithStaticTools] | Agent[WithStreamingTools] | Agent[WithMixedTools]', content: str, tool_calls: list[TokiToolCall | dict]):
-        self.add_message(role='assistant', content=content, tool_calls=tool_calls)
+    def add_assistant_tool_calls(
+        self: 'Agent[WithStaticTools] | Agent[WithStreamingTools] | Agent[WithMixedTools]',
+        content: str,
+        tool_calls: list[TokiToolCall | dict],
+        *,
+        provider_state: dict[str, Any] | None = None,
+    ):
+        normalized = [TokiToolCall.from_dict(tc) for tc in tool_calls]
+        self.add_message(
+            role='assistant',
+            content=content,
+            tool_calls=normalized,
+            provider_state=provider_state or _provider_state_from_tool_calls(normalized),
+        )
 
     def add_tool_message(self: 'Agent[WithStaticTools] | Agent[WithStreamingTools] | Agent[WithMixedTools]', tool_call_id: str, content: str):
         # warn if `tool_call_id` doesn't match any pending tool call (a
@@ -172,15 +198,19 @@ class Agent(Generic[ToolsShape]):
             result = self.model.complete(self.messages, stream=False, tools=self.tools, capture_thinking=capture_thinking)
 
         if isinstance(result, str):
-            self.add_assistant_message(result)
+            self.add_assistant_message(result, provider_state=self.model.last_provider_state)
             return result
         if isinstance(result, TokiThoughtResponse):
-            self.add_assistant_message(result.content)
+            self.add_assistant_message(result.content, provider_state=self.model.last_provider_state)
             return result
         # at this point: TokiToolsResponse / TokiToolsThoughtResponse
         materialized = [_materialize_tool_call(tc) for tc in result.tool_calls]
         self_with_tools = cast('Agent[WithStaticTools]', self)
-        self_with_tools.add_assistant_tool_calls(result.content, materialized)
+        self_with_tools.add_assistant_tool_calls(
+            result.content,
+            materialized,
+            provider_state=self.model.last_provider_state,
+        )
         return result
 
     def _streaming_execute(self, *, capture_thinking: bool):
@@ -210,9 +240,13 @@ class Agent(Generic[ToolsShape]):
         content = ''.join(content_chunks)
         if tool_calls:
             self_with_tools = cast('Agent[WithStaticTools]', self)
-            self_with_tools.add_assistant_tool_calls(content, tool_calls)
+            self_with_tools.add_assistant_tool_calls(
+                content,
+                tool_calls,
+                provider_state=self.model.last_provider_state,
+            )
         else:
-            self.add_assistant_message(content)
+            self.add_assistant_message(content, provider_state=self.model.last_provider_state)
 
     # ----- aexecute: 16 overloads -----------------------------------------------
 
@@ -265,14 +299,18 @@ class Agent(Generic[ToolsShape]):
             result = await self.model.acomplete(self.messages, stream=False, tools=self.tools, capture_thinking=capture_thinking)
 
         if isinstance(result, str):
-            self.add_assistant_message(result)
+            self.add_assistant_message(result, provider_state=self.model.last_provider_state)
             return result
         if isinstance(result, TokiThoughtResponse):
-            self.add_assistant_message(result.content)
+            self.add_assistant_message(result.content, provider_state=self.model.last_provider_state)
             return result
         materialized = [await _amaterialize_tool_call(tc) for tc in result.tool_calls]
         self_with_tools = cast('Agent[WithStaticTools]', self)
-        self_with_tools.add_assistant_tool_calls(result.content, materialized)
+        self_with_tools.add_assistant_tool_calls(
+            result.content,
+            materialized,
+            provider_state=self.model.last_provider_state,
+        )
         return result
 
     async def _streaming_aexecute(self, *, capture_thinking: bool):
@@ -301,9 +339,13 @@ class Agent(Generic[ToolsShape]):
         content = ''.join(content_chunks)
         if tool_calls:
             self_with_tools = cast('Agent[WithStaticTools]', self)
-            self_with_tools.add_assistant_tool_calls(content, tool_calls)
+            self_with_tools.add_assistant_tool_calls(
+                content,
+                tool_calls,
+                provider_state=self.model.last_provider_state,
+            )
         else:
-            self.add_assistant_message(content)
+            self.add_assistant_message(content, provider_state=self.model.last_provider_state)
 
 
 def _attributes_map_for(model: BaseModel) -> dict | None:
@@ -324,7 +366,11 @@ def _materialize_tool_call(tc: TokiToolCall | TokiToolCallStream) -> TokiToolCal
     parsed arguments dict."""
     if isinstance(tc, TokiToolCall):
         return tc
-    return TokiToolCall(id=tc.id, function=TokiToolFunction(name=tc.name, arguments=tc.arguments))
+    return TokiToolCall(
+        id=tc.id,
+        function=TokiToolFunction(name=tc.name, arguments=tc.arguments),
+        provider_state=tc.provider_state,
+    )
 
 
 async def _amaterialize_tool_call(tc: TokiToolCall | AsyncTokiToolCallStream) -> TokiToolCall:
@@ -332,4 +378,17 @@ async def _amaterialize_tool_call(tc: TokiToolCall | AsyncTokiToolCallStream) ->
     if isinstance(tc, TokiToolCall):
         return tc
     args = await tc.arguments()
-    return TokiToolCall(id=tc.id, function=TokiToolFunction(name=tc.name, arguments=args))
+    return TokiToolCall(
+        id=tc.id,
+        function=TokiToolFunction(name=tc.name, arguments=args),
+        provider_state=tc.provider_state,
+    )
+
+
+def _provider_state_from_tool_calls(
+    tool_calls: list[TokiToolCall],
+) -> dict[str, Any] | None:
+    for tool_call in tool_calls:
+        if tool_call.provider_state is not None:
+            return tool_call.provider_state
+    return None

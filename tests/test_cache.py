@@ -40,6 +40,24 @@ def _big_user(n_chars: int) -> TokiMessage:
 
 
 class TestCacheState:
+    def test_hash_includes_byte_valued_provider_state(self):
+        first = TokiMessage(
+            role="assistant",
+            content="same",
+            provider_state={"bedrock": {"redacted": b"first"}},
+        )
+        second = TokiMessage(
+            role="assistant",
+            content="same",
+            provider_state={"bedrock": {"redacted": b"second"}},
+        )
+
+        assert _hash_messages(None, None, [first]) != _hash_messages(
+            None,
+            None,
+            [second],
+        )
+
     def test_defers_when_below_min(self):
         state = _CacheState(min_cache_size_estimate=1024)
         msgs = [_msg("user", "tiny")]

@@ -16,9 +16,9 @@ print(response)
 ```
 
 ## Feature Overview
-- **Same code, any backend.** OpenRouter, OpenAI, Anthropic, Google, Ollama, and local HuggingFace models all share one `BaseModel` interface; blocking completions, streaming, sync, async, tools, and thinking capture work identically across providers.
+- **Same code, any backend.** OpenRouter, OpenAI, Anthropic, Google, Amazon Bedrock, Ollama, and local HuggingFace models all share one `BaseModel` interface; blocking completions, streaming, sync, async, tools, and thinking capture work identically across providers.
 - **Streaming, all the way down.** Yields content tokens, thinking tokens, *and* tool-call argument values as they arrive. Most libraries only stream content text; toki lets you consume a tool's args character-by-character while the model is still emitting them.
-- **Native async, no thread wrapping.** Every backend ships a real `acomplete()` / `aexecute()` (litellm's `acompletion`, `httpx.AsyncClient`, `ollama.AsyncClient`, and an `asyncio.Queue` bridge for the local `transformers` worker thread). Same args, same chunk semantics, same typing overloads — see [Async usage](#async-usage).
+- **Non-blocking async.** Every backend ships `acomplete()` / `aexecute()` with the same args, chunk semantics, and typing overloads. Native async transports are used where available; Bedrock dispatches its synchronous boto3 client through worker threads — see [Async usage](#async-usage).
 - **Provider-aware prompt caching.** A single `cache='rolling' | 'static'` knob plumbs through to each backend's native caching: Anthropic `cache_control` markers, Gemini explicit `cachedContents` resources, OpenRouter routing — see [Caching](#caching).
 - **Conversation + agentic flow.** `Agent` tracks message history and tool usage; `StateMachine` / `ClassStateMachine` structure flows for complex multi-agent interactions.
 - **Strongly typed surface.** Per-backend `<Provider>ModelName` literals give IDE autocomplete on real model ids; `Agent[WithStaticTools]` etc. specialize `execute()`'s return type to the tools shape you're using.
@@ -33,6 +33,7 @@ pip install 'toki[openrouter]'     # OpenRouter HTTP API
 pip install 'toki[openai]'         # OpenAI (via litellm)
 pip install 'toki[anthropic]'      # Anthropic Claude (via litellm)
 pip install 'toki[google]'         # Google Gemini AI Studio (via litellm)
+pip install 'toki[bedrock]'        # Amazon Bedrock Runtime via boto3
 pip install 'toki[local]'          # local models via HuggingFace transformers + torch
 pip install 'toki[all]'            # everything
 ```
@@ -124,9 +125,10 @@ print(result)
 | OpenAI      | `OpenAIModel`     | `toki[openai]`     | OpenAI Chat Completions (via litellm)   | `OPENAI_API_KEY`      |
 | Anthropic   | `AnthropicModel`  | `toki[anthropic]`  | Anthropic Messages (via litellm)        | `ANTHROPIC_API_KEY`   |
 | Google      | `GoogleModel`     | `toki[google]`     | Gemini AI Studio (via litellm)          | `GEMINI_API_KEY`      |
+| Bedrock     | `BedrockModel`    | `toki[bedrock]`    | Amazon Bedrock Converse                 | AWS chain or `AWS_BEARER_TOKEN_BEDROCK` |
 | HuggingFace | `LocalModel`      | `toki[local]`      | local `transformers` + `torch`          | none                  |
 
-All six implement `toki.BaseModel`, so the same code works across all of them. The minimal "say hello in 5 words" demo for each:
+All seven implement `toki.BaseModel`, so the same code works across all of them. The minimal "say hello in 5 words" demo for each:
 ```python
 ########################### Ollama ###########################
 from toki import Agent, OllamaModel
@@ -173,6 +175,18 @@ agent.add_user_message("Say hello in 5 words")
 print(f'google says {agent.execute()}')
 
 
+########################### Amazon Bedrock ###########################
+from toki import Agent, BedrockModel
+
+model = BedrockModel(
+    "global.anthropic.claude-sonnet-4-6",
+    region_name="us-east-1",
+)
+agent = Agent(model)
+agent.add_user_message("Say hello in 5 words")
+print(f'bedrock says {agent.execute()}')
+
+
 ########################### Local/HF ###########################
 from toki import Agent, LocalModel
 
@@ -184,10 +198,49 @@ print(f'local says {agent.execute()}')
 
 The `Model` constructor is the only thing that changes between backends.
 
+### Bedrock authentication
+
+`BedrockModel` uses boto3's normal AWS credential chain when `api_key` is omitted. That includes `AWS_PROFILE`, shared AWS config and credentials files, IAM Identity Center, assume-role and web-identity profiles, ECS task roles, and EC2 instance roles. `profile_name=` and `region_name=` select a profile and region for one model instance:
+
+```python
+from toki import BedrockModel
+
+model = BedrockModel(
+    "global.anthropic.claude-sonnet-4-6",
+    profile_name="work",
+    region_name="us-east-1",
+)
+```
+
+For the same `api_key=` interface as other hosted backends, pass an Amazon Bedrock bearer API key or set `AWS_BEARER_TOKEN_BEDROCK` yourself:
+
+```python
+model = BedrockModel(
+    "global.anthropic.claude-sonnet-4-6",
+    api_key="...",
+    region_name="us-east-1",
+)
+```
+
+Current boto3 releases only accept Bedrock bearer keys through `AWS_BEARER_TOKEN_BEDROCK`, so `api_key=` sets that process-wide environment variable. When the variable is present, Toki configures boto3 to prefer Bedrock's `httpBearerAuth` scheme over SigV4; otherwise boto3 uses its normal AWS credential chain. Different bearer keys cannot be isolated across concurrent model instances. The argument is not an AWS access-key/secret-key pair; use the standard credential chain for those credentials. The caller needs `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`, and `bedrock:CountTokens` permissions for the corresponding operations.
+
+The optional live smoke test uses the same credential chain:
+
+```bash
+AWS_BEARER_TOKEN_BEDROCK=... \
+AWS_DEFAULT_REGION=us-east-1 \
+BEDROCK_TEST_MODEL=global.anthropic.claude-sonnet-4-6 \
+pytest -m cost_integration tests/test_bedrock.py
+```
+
+Set `BEDROCK_REASONING_TEST_MODEL` and `BEDROCK_TOOL_TEST_MODEL` to include the opt-in reasoning and forced-tool checks. `BEDROCK_CACHE_TEST_MODEL` selects a cache-capable model for `pytest -m cache_integration tests/test_bedrock.py`. Bedrock remains out of the shared live Cartesian suite so normal tests do not add a large block of paid AWS calls.
+
 
 ### Notes:
 - `OllamaModel` checks whether the requested tag is already pulled and, if not, pulls it before returning. Subsequent constructions skip straight to the chat.
 - The litellm-backed frontends (`OpenAIModel`, `AnthropicModel`, `GoogleModel`) and `OpenRouterModel` all accept `reasoning_effort` (see [Capturing Thinking](#capturing-thinking)) and `allow_parallel_tool_calls`. `AnthropicModel`, `GoogleModel`, and `OpenRouterModel` additionally take `cache=` (see [Caching](#caching)) — `OpenAIModel`, `OllamaModel`, and `LocalModel` don't, since their cache behavior isn't user-controllable.
+- `BedrockModel` accepts any foundation-model ID, inference-profile ID, or corresponding ARN. `BedrockModelName` provides a generated autocomplete snapshot, while arbitrary strings remain valid because availability is regional and account-dependent.
+- Bedrock Converse has no provider-neutral switch for parallel tool use. `BedrockModel(..., allow_parallel_tool_calls=True)` tells Toki to accept multiple `toolUse` blocks without an invariant warning; whether the selected model emits them remains model-specific.
 - Toki targets instruction-tuned chat models — anything that ships a tokenizer `chat_template` (Qwen-Instruct, Llama-Instruct, Gemma-`-it`, etc.). Base / pretrained-only checkpoints aren't supported; for raw text continuation, use `transformers` directly.
 - Browse all OpenRouter models: [openrouter.ai/models](https://openrouter.ai/models).
 
@@ -203,9 +256,21 @@ print(attributes_map["google/gemini-2.5-pro"])   # Attr(context_size=..., suppor
 ```
 
 
-The same shape exists for every backend: `from toki.<backend> import <Provider>ModelName, list_<backend>_models, attributes_map`. Backends carry per-capability flags on their `Attr` dataclass: `context_size`, `supports_tools`, and (everywhere except `LocalModel`) `supports_thinking`. `LocalModel` deliberately omits `supports_thinking` — HuggingFace chat templates don't expose a reliable machine-readable thinking signal, so verifying thinking support is on you (check the model card, the chat template, or run with `capture_thinking=True` once and inspect the response).
+The same shape exists for every catalog-backed provider: `from toki.<backend> import <Provider>ModelName, list_<backend>_models, attributes_map`. Backends carry per-capability flags on their `Attr` dataclass: `context_size`, `supports_tools`, and (everywhere except `LocalModel`) `supports_thinking`. Bedrock adds caching, streaming, and reasoning-family metadata because Converse capabilities vary by hosted model. `LocalModel` deliberately omits `supports_thinking` — HuggingFace chat templates don't expose a reliable machine-readable thinking signal, so verifying thinking support is on you (check the model card, the chat template, or run with `capture_thinking=True` once and inspect the response).
 
 Each `models.py` snapshot is regenerated by a `toki-fetch-<backend>-models` script (see [Development](#development))
+
+Bedrock also exposes explicit live discovery without putting a network call on model construction:
+
+```python
+from toki.bedrock import discover_bedrock_models, list_bedrock_models
+
+print(list_bedrock_models())  # bundled, zero-latency snapshot
+available = discover_bedrock_models(region_name="us-east-1")  # cached by region/profile
+available = discover_bedrock_models(region_name="us-east-1", refresh=True)
+```
+
+Live records include foundation models and inference profiles plus the capabilities AWS exposes. The bundled snapshot is generated without AWS credentials from LiteLLM's public Bedrock Converse metadata, then enriched with Toki's model-family reasoning and explicit-cache rules. Discovery is never called implicitly.
 
 > NOTE: The model-name Literals aren't exhaustive — you can pass any model id the underlying provider accepts at runtime.
 ```python
@@ -238,7 +303,7 @@ Most user code lives at the `Agent` layer. The `BaseModel` layer is there for di
 
 Reasoning models (OpenAI o-series, Anthropic Claude with thinking, DeepSeek-R1, QwQ, Qwen3 thinking variants, etc.) produce internal "thinking" before their final answer. By default toki strips this — your stream stays a clean stream of answer text. Pass `capture_thinking=True` to surface it as `TokiThinking` chunks (streaming) or as a `thought` field on the response object (blocking).
 
-`capture_thinking=True` is sufficient on its own to engage server-side reasoning at a medium effort default on every reasoning-capable backend (`AnthropicModel`, `GoogleModel`, `OpenRouterModel`, and `OpenAIModel`). Pair it with `reasoning_effort=...` on the model constructor when you want a non-medium level; pair it with `reasoning={...}` (OpenRouter) or `thinking={...}` (litellm-backed) via `**kwargs` for full control over token budgets, exclusions, etc. `OpenAIModel` is the exception: server-side reasoning still engages, but the chain text isn't reliably surfaced — see [Backend nuances](#backend-nuances).
+`capture_thinking=True` is sufficient on its own to engage server-side reasoning at a medium effort default on reasoning-capable provider-specific backends (`AnthropicModel`, `GoogleModel`, `OpenRouterModel`, `OpenAIModel`, and known `BedrockModel` families). Pair it with `reasoning_effort=...` on the model constructor when you want a non-medium level. `OpenAIModel` is the exception: server-side reasoning still engages, but the chain text isn't reliably surfaced.
 
 Setting `capture_thinking=True` emits a one-shot `TokiThinkingSupportWarning` in two cases:
 
@@ -283,7 +348,7 @@ print("answer:", result.content)
 
 When tools are configured, blocking mode returns `TokiToolsThoughtResponse[T]` (which also carries a `thought` field) whenever the model invoked a tool.
 
-Thinking text is *not* added back to message history; round-tripping reasoning context across turns is not yet supported.
+Thinking text is not added to visible message content. Bedrock's signed reasoning blocks are retained as opaque provider state on assistant tool-call messages so reasoning-enabled tool loops can replay them exactly; other backends continue to omit thinking from history.
 
 ### Backend nuances
 
@@ -293,7 +358,32 @@ How `capture_thinking=True` plumbs through to each provider:
 - **OpenRouter** — sends `reasoning: {effort: reasoning_effort}` when the ctor `reasoning_effort` is set; otherwise sends `reasoning: {enabled: true}` (medium effort) when `capture_thinking=True`. User-provided `reasoning={...}` via kwargs always wins.
 - **Anthropic / Google** (litellm) — reliably stream thoughts back as `reasoning_content` deltas. `capture_thinking=True` alone now auto-engages `reasoning_effort='medium'` server-side; an explicit `reasoning_effort` on the constructor overrides; an explicit `thinking={...}` kwarg overrides both.
 - **OpenAI** (litellm) — *unreliable.* `capture_thinking=True` engages reasoning server-side (improving answer quality at higher effort), but OpenAI's Chat Completions endpoint doesn't return reasoning text at all, and the Responses API summaries are emitted only sporadically (especially when the response is a tool call). Toki emits a one-shot `TokiThinkingSupportWarning` to flag this when you opt in.
+- **Bedrock** — maps the common `reasoning_effort` knob to each known Converse family. `capture_thinking=True` uses medium when neither `reasoning_effort` nor `reasoning_config` is set. Complete signed and redacted reasoning blocks are retained opaquely on every assistant turn and replayed by `Agent`, even when thought text is not surfaced.
 - **Local** (transformers) — parses inline `<think>...</think>` tags inside the model's chat-template output.
+
+For advanced native control, Bedrock provides typed family configurations:
+
+```python
+from toki import BedrockModel, ClaudeAdaptiveReasoning
+
+model = BedrockModel(
+    "global.anthropic.claude-sonnet-4-6",
+    reasoning_config=ClaudeAdaptiveReasoning(effort="high"),
+)
+```
+
+Older Claude models use a token budget, which must be lower than the configured output-token limit:
+
+```python
+from toki import ClaudeBudgetReasoning
+
+model = BedrockModel(
+    "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+    reasoning_config=ClaudeBudgetReasoning(budget_tokens=4096),
+)
+```
+
+`NovaReasoning` and `OpenAIReasoning` provide the corresponding typed controls. Passing both `reasoning_effort` and `reasoning_config` is an error. Advanced fields not yet represented by Toki may still be passed through `additionalModelRequestFields`; explicit per-call fields win over constructor-derived defaults.
 
 ### Reasoning effort
 
@@ -304,6 +394,7 @@ OpenAIModel("gpt-5.4",                      api_key=..., reasoning_effort="high"
 AnthropicModel("claude-sonnet-4-5",         api_key=..., reasoning_effort="medium")
 GoogleModel("gemini-2.5-pro",               api_key=..., reasoning_effort="low")
 OpenRouterModel("anthropic/claude-sonnet-4-5", api_key=..., reasoning_effort="high")
+BedrockModel("global.anthropic.claude-sonnet-4-6", reasoning_effort="high")
 ```
 
 Accepted values: `'minimal' | 'low' | 'medium' | 'high' | 'xhigh'`; provider-supported subsets vary, and `None` (the default) disables reasoning entirely. OpenRouter normalizes the knob across providers (Anthropic via `budget_tokens`, Gemini via `thinkingLevel`, OpenAI directly).
@@ -316,6 +407,7 @@ Backends that have actual choices to make about prompt caching expose a `cache=`
 AnthropicModel("claude-sonnet-4-5", api_key=..., cache='rolling')
 GoogleModel("gemini-2.5-flash",     api_key=..., cache='static')
 OpenRouterModel("anthropic/claude-haiku-4-5", api_key=..., cache='rolling')
+BedrockModel("amazon.nova-micro-v1:0", cache='static')
 ```
 
 ### Rolling vs static
@@ -326,7 +418,7 @@ OpenRouterModel("anthropic/claude-haiku-4-5", api_key=..., cache='rolling')
     - **Native Anthropic** and **OpenRouter `anthropic/*`**: rolling engages caching every turn (the marker reaches the API and a fresh cache is *written*) but doesn't reliably produce reads — Anthropic's per-breakpoint lookup is keyed by the exact prefix hash up to the marker position, and rolling moves the marker each turn, so call N+1's lookup misses call N's entry. Use `'static'` instead for deterministic cache hits on Claude.
 - `cache='static'` — the first time the conversation is large enough to actually be cached, toki snapshots `len(messages)` as a fixed *anchor index* and pins the cache breakpoint there. The anchor never advances on its own. Subsequent calls hit the cache for `messages[:anchor]`; everything past it is sent live. Produces deterministic reads on every backend that supports caching at all. Best for one-shot or short-tail use cases over a large fixed prefix.
 
-For controllable backends, the snapshot is *deferred*: the anchor only lands on the first call where the prefix clears the per-backend minimum (1024 tokens for Anthropic / OpenRouter, 4096 for Google by default — both estimated offline as `chars/4` to avoid a token-count round-trip). Calls before that pass through with no caching activity.
+For controllable backends, the snapshot is *deferred*: the anchor only lands on the first call where the prefix clears the per-model/backend minimum (commonly 1024 tokens, 4096 for Google by default — estimated offline as `chars/4` to avoid a token-count round-trip). Calls before that pass through with no caching activity.
 
 ### Mid-session strategy switching
 
@@ -361,6 +453,7 @@ This drops the anchor history. The next `'static'` call defers until the new pre
 | **AnthropicModel** | `'rolling' \| 'static' \| None` | `None` | Injects up to 3 `cache_control` markers (system + last tool + boundary message). Non-mutating: `Agent.messages` is never touched; markers are placed on per-call wire copies. `cache_ttl: '5m' \| '1h'` (default `'5m'`). **Note**: Anthropic's per-breakpoint cache lookup keys on the exact prefix hash up to each marker position. `'static'` is the deterministic-cache-hit path (markers stay pinned); `'rolling'` writes a fresh cache entry each turn but does not reliably read prior turns' caches. |
 | **GoogleModel** | `'rolling' \| 'static' \| None` | `None` | Drives the explicit-cache lifecycle through the `google-genai` SDK: creates `cachedContents/<id>` resources and passes the name to litellm via `cached_content=`. Knobs: `cache_ttl`, `cache_min_tokens`, `cache_refresh_delta_tokens`, `cache_refresh_buffer_seconds`. With `cache=None`, Gemini's *implicit* caching (automatic on 2.5+/3.x models) still applies. |
 | **OpenRouterModel** | `'rolling' \| 'static' \| None` | `None` | Routed by model-id prefix. `anthropic/*` rolling sets a top-level `cache_control` on the latest user message (engages caching but, like native Anthropic, doesn't read prior turns' entries — use `'static'` for reads); `anthropic/*` static places explicit per-block markers at the snapshot anchor; `google/*` places a single marker at the latest user (rolling) or anchor (static), and Gemini's prefix-matching lookup *does* produce reads in both modes. Other prefixes warn at construction. `cache_ttl` only applies on the anthropic route. |
+| **BedrockModel** | `'rolling' \| 'static' \| None` | `None` | Inserts a Converse `cachePoint` only when the bundled model capabilities say Converse explicit caching is supported. Placement, minimum tokens, and `'5m'`/`'1h'` TTL support are model-specific. Unsupported or unknown models emit `TokiCacheWarning` and continue without a marker. Implicit caching remains active independently and is reported in usage. |
 | **OpenAIModel** | *(absent)* | n/a | OpenAI's prompt-prefix cache is fully automatic for prompts ≥ 1024 tokens and cannot be disabled or controlled — toki has nothing to add at the wire level. |
 | **OllamaModel** | *(absent)* | n/a | The Ollama daemon does prefix KV-cache reuse on its own across sequential calls; toki has nothing to add. |
 | **LocalModel** | *(absent)* | n/a | Cross-call KV-cache reuse isn't implemented yet; would need a `past_key_values` tensor held across calls plus invalidation logic for any history mutation. |
@@ -368,6 +461,8 @@ This drops the anchor history. The next `'static'` call defers until the new pre
 For native Google: cache creation goes through `client.caches.create()` (or `client.aio.caches.create()` on async paths). Failures (model not supported, prompt too small, quota, network) are caught and the call falls back to a non-cached request after emitting a `UserWarning`. Caches are not deleted server-side when superseded; they expire on Google's TTL (default 1 hour, configurable via `cache_ttl=`).
 
 A note on shared models across concurrent agents: `_CacheState` lives on the model instance, so sharing one strategy-bearing model across multiple `Agent`s with diverging histories will thrash the cache (each agent's prefix invalidates the other's anchor). Use one model per long-running agent.
+
+After a request, `model.usage_metadata` reports normalized prompt, completion, and total tokens. `cache_read_tokens` and `cache_write_tokens` default to zero and are populated by Bedrock when present. Bedrock's `prompt_tokens` includes uncached, cache-read, and cache-write input, so `total_tokens == prompt_tokens + completion_tokens` remains true.
 
 ## Token counting
 
@@ -410,16 +505,18 @@ Backends raise `ValueError` for an unsupported `kind`. The `safety_factor` kwarg
 | `AnthropicModel` | exact, online via a `max_tokens=1` chat completion (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
 | `GoogleModel` | exact, online via a `max_tokens=1` chat completion (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` heuristic + safety factor | same as `'exact'` |
 | `OpenRouterModel` | exact, online via a `max_tokens=1` `chat/completions` round-trip (reads `usage.prompt_tokens`) | estimate via `litellm.token_counter` keyed off the upstream model id | same as `'exact'` |
+| `BedrockModel` | exact via Runtime `CountTokens`, Claude Mantle for CRIS-only Claude, or a warned one-token Converse fallback | (raises) | same as `'exact'` |
 
 Notes:
 - The Ollama path treats the daemon's `prompt_eval_count` as exact since the typical setup runs the daemon on the same machine as the caller. It still requires the daemon to be reachable.
 - `OpenRouterModel`'s offline path is opt-in: it imports `litellm` lazily and raises `ImportError("install toki[litellm]")` if it's not available, so the `[openrouter]` extra stays lightweight.
 - For `LocalModel` / `OllamaModel`, the safety-factor knob is intentionally absent — there's no estimate path to apply it to.
+- Bedrock Runtime `CountTokens` does not accept every inference profile that Converse accepts. Toki uses Bedrock Mantle's dedicated count endpoint for affected Claude profiles. For another unsupported profile it falls back to a one-output-token Converse request and emits a `TokiBackendQuirkWarning` because that path has inference cost.
 - **Cost of `'exact'`/`'online'` on Anthropic / Google / OpenRouter**: the count is read from `usage.prompt_tokens` on a `max_tokens=1` chat completion, which costs the prompt + one output token per call. Each provider exposes a dedicated count-tokens endpoint, but those endpoints are inconsistent across providers and (for Anthropic and Gemini) silently mishandle prompts containing tools or system messages. Routing through a tiny generation call sidesteps both issues and yields a guaranteed-exact count. Anthropic specifically: see [litellm#26324](https://github.com/BerriAI/litellm/issues/26324) — once that bug is fixed upstream, `AnthropicModel` could switch to the cheaper endpoint.
 
 ### Async sibling
 
-Every backend mirrors the sync method with `acount_tokens(...)`. The default implementation in `BaseModel` just calls the sync version, but Anthropic, Google, OpenRouter, and Ollama all override with a real async path so token counting doesn't block your event loop.
+Every backend mirrors the sync method with `acount_tokens(...)`. The default implementation in `BaseModel` just calls the sync version; hosted backends provide non-blocking async paths. Bedrock dispatches boto3's synchronous `CountTokens` operation through `asyncio.to_thread`.
 
 ## Tools (function calling)
 
@@ -564,7 +661,7 @@ Mixing static and streaming tools in the same `Agent` is fine: static tools yiel
 
 ## Async usage
 
-Every `BaseModel` and `Agent` mirrors its sync surface with `acomplete()` / `aexecute()`. Same arguments, same chunk semantics, same overloads — porting code is `complete -> acomplete` plus `await` / `async for`. All bundled backends (`OpenRouterModel`, `OpenAIModel`, `AnthropicModel`, `GoogleModel`, `OllamaModel`, `LocalModel`) implement async natively (litellm's `acompletion`, `httpx.AsyncClient`, `ollama.AsyncClient`, and an `asyncio.Queue` bridge for the local `transformers` worker thread); none of them are sync-wrapped-in-a-thread.
+Every `BaseModel` and `Agent` mirrors its sync surface with `acomplete()` / `aexecute()`. Same arguments, same chunk semantics, same overloads — porting code is `complete -> acomplete` plus `await` / `async for`. OpenRouter, the litellm-backed providers, and Ollama use native async clients; Local uses an `asyncio.Queue` bridge around its generation worker. Bedrock dispatches blocking calls through `asyncio.to_thread` and uses one producer thread feeding an async queue for each event stream.
 
 **Blocking** — `acomplete()` / `aexecute()` returns a coroutine:
 
@@ -681,6 +778,7 @@ from toki import (
     get_openai_api_key,       # OPENAI_API_KEY
     get_anthropic_api_key,    # ANTHROPIC_API_KEY
     get_google_api_key,       # GEMINI_API_KEY
+    get_bedrock_api_key,      # AWS_BEARER_TOKEN_BEDROCK
 )
 
 key = get_openrouter_api_key()  # raises ValueError if env var unset
@@ -862,6 +960,7 @@ Each handler returns the next `State` (or `END_STATE` to terminate).
   - `toki-fetch-local-models` — regenerate `toki/local/models.py` from `toki/local/curated.txt` (chat-compatible ids only) union top HuggingFace chat models by 30-day downloads and by all-time likes; prunes ids in neither the curated file nor those popularity sets
   - `toki-fetch-openai-models` / `toki-fetch-anthropic-models` / `toki-fetch-google-models` — regenerate the per-provider `models.py` snapshots from litellm's bundled metadata
   - `toki-fetch-ollama-models` — regenerate `toki/ollama/models.py` by scraping the popular page of the Ollama library; writes the current popular set and prunes tags that have left the registry
+  - `toki-fetch-bedrock-models` — regenerate `toki/bedrock/models.py` without AWS credentials from LiteLLM's public Bedrock Converse metadata, merged with Toki's curated reasoning and caching metadata
   - `uv version --bump <level>` where `<level>` is one of `major`, `minor`, or `patch`
 - Testing:
   - `uv run pytest` — full suite (requires every provider's API key plus a local Ollama daemon and a HuggingFace-downloadable model)

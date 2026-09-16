@@ -1,6 +1,6 @@
 [project]
 name = "toki"
-version = "1.3.4"
+version = "1.4.0"
 description = "Minimal universal LLM interface API"
 readme = "README.md"
 authors = [
@@ -19,7 +19,8 @@ openai = ["toki[litellm]"]
 google = ["toki[litellm]", "google-genai>=1.0"]
 anthropic = ["toki[litellm]"]
 ollama = ["ollama>=0.6", "tqdm>=4"]
-all = ["toki[openrouter,local,openai,google,anthropic,ollama]"]
+bedrock = ["boto3>=1.43"]
+all = ["toki[openrouter,local,openai,google,anthropic,ollama,bedrock]"]
 
 [project.urls]
 "Repository" = "https://github.com/jataware/toki"
@@ -87,3 +88,5 @@ markers = [
 "toki-fetch-google-models" = "toki.google.fetch_models:_create_models_types_file"
 # Developer utility to regenerate the Ollama models file from the ollama.com registry
 "toki-fetch-ollama-models" = "toki.ollama.fetch_models:_create_models_types_file"
+# Developer utility to regenerate the Bedrock model/profile snapshot
+"toki-fetch-bedrock-models" = "toki.bedrock.fetch_models:_create_models_types_file"

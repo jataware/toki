@@ -2,12 +2,19 @@ import json
 import warnings
 from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Coroutine,
+    Generator,
+    Iterator,
+    Sequence,
+)
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, AsyncIterator, Coroutine, Generator, Generic, Iterator, Literal, Sequence, TypeVar, overload
+from typing import Any, Generic, Literal, TypeVar, overload
 from uuid import uuid4
 
 from .helpers._jsonstream import JsonStreamParser
-
 
 Role = Literal["user", "assistant", "system", "tool"]
 
@@ -79,6 +86,7 @@ class TokiToolCall:
     id: str
     function: TokiToolFunction
     type: Literal["function"] = "function"
+    provider_state: dict[str, Any] | None = field(default=None, repr=False)
 
     @classmethod
     def from_dict(cls, x: 'TokiToolCall | dict') -> 'TokiToolCall':
@@ -88,6 +96,7 @@ class TokiToolCall:
             id=x["id"],
             type=x.get("type", "function"),
             function=TokiToolFunction.from_dict(x["function"]),
+            provider_state=x.get("provider_state"),
         )
 
 
@@ -97,6 +106,7 @@ class TokiMessage:
     content: str
     tool_calls: list[TokiToolCall] | None = None
     tool_call_id: str | None = None
+    provider_state: dict[str, Any] | None = field(default=None, repr=False)
 
     @classmethod
     def from_dict(cls, x: 'TokiMessage | dict') -> 'TokiMessage':
@@ -108,6 +118,7 @@ class TokiMessage:
             content=x["content"],
             tool_calls=[TokiToolCall.from_dict(t) for t in tcs] if tcs else None,
             tool_call_id=x.get("tool_call_id"),
+            provider_state=x.get("provider_state"),
         )
 
 
@@ -116,6 +127,8 @@ class TokiUsageMetadata:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 @dataclass
@@ -269,9 +282,17 @@ class _ToolCallStreamStateBase:
 
     _ARG_STREAM_CLS: type
 
-    def __init__(self, *, driver: Any, id: str, name: str) -> None:
+    def __init__(
+        self,
+        *,
+        driver: Any,
+        id: str,
+        name: str,
+        provider_state: dict[str, Any] | None = None,
+    ) -> None:
         self.id = id
         self.name = name
+        self.provider_state = provider_state
         self._driver = driver
         # finalized parsed dict (filled when the underlying parser emits 'done')
         self._dict: dict = {}
@@ -556,6 +577,7 @@ class _RawTurn:
     tool_calls: list[TokiToolCall]
     thought: str
     usage: TokiUsageMetadata | None = None
+    provider_state: dict[str, Any] | None = None
 
 
 @dataclass
@@ -577,6 +599,7 @@ class _RawToolCallChunk:
     id: str | None = None
     name: str | None = None
     arguments_fragment: str | None = None
+    provider_state: dict[str, Any] | None = None
 
 
 @dataclass
@@ -584,7 +607,12 @@ class _RawUsage:
     usage: TokiUsageMetadata
 
 
-_RawChunk = _RawContentChunk | _RawThoughtChunk | _RawToolCallChunk | _RawUsage
+@dataclass
+class _RawProviderState:
+    provider_state: dict[str, Any]
+
+
+_RawChunk = _RawContentChunk | _RawThoughtChunk | _RawToolCallChunk | _RawUsage | _RawProviderState
 
 
 # --- Stream core + drivers ---------------------------------------------------
@@ -595,6 +623,7 @@ class _ToolState:
     id: str
     name: str
     is_streaming: bool
+    provider_state: dict[str, Any] | None = None
     parser: JsonStreamParser = field(default_factory=JsonStreamParser)
     stream: _ToolCallStreamStateBase | None = None
     finalized: bool = False
@@ -617,11 +646,13 @@ class _StreamCore:
         streaming_names: set[str],
         capture_thinking: bool,
         on_usage: Any,  # callable(TokiUsageMetadata) -> None
+        on_provider_state: Any,  # callable(dict[str, Any]) -> None
         on_finalize_invariants: Any = None,  # callable(list[TokiToolCall]) -> None | None
     ) -> None:
         self._streaming_names = streaming_names
         self._capture_thinking = capture_thinking
         self._on_usage = on_usage
+        self._on_provider_state = on_provider_state
         self._on_finalize_invariants = on_finalize_invariants
         self._outer: deque = deque()
         self._tool_state: dict[int, _ToolState] = {}
@@ -650,6 +681,9 @@ class _StreamCore:
         if isinstance(chunk, _RawUsage):
             self._on_usage(chunk.usage)
             return
+        if isinstance(chunk, _RawProviderState):
+            self._on_provider_state(chunk.provider_state)
+            return
 
     def _process_tool_chunk(self, chunk: _RawToolCallChunk) -> None:
         idx = chunk.index
@@ -663,9 +697,15 @@ class _StreamCore:
                 id=chunk.id or f"toki-tool-{uuid4().hex}",
                 name=chunk.name,
                 is_streaming=is_streaming,
+                provider_state=chunk.provider_state,
             )
             if is_streaming:
-                state.stream = self._tool_call_stream_cls(driver=self._driver, id=state.id, name=state.name)
+                state.stream = self._tool_call_stream_cls(
+                    driver=self._driver,
+                    id=state.id,
+                    name=state.name,
+                    provider_state=state.provider_state,
+                )
                 self._outer.append(state.stream)
             self._tool_state[idx] = state
 
@@ -681,6 +721,7 @@ class _StreamCore:
                 tc = TokiToolCall(
                     id=state.id,
                     function=TokiToolFunction(name=state.name, arguments=ev[1]),
+                    provider_state=state.provider_state,
                 )
                 self._finished_tool_calls.append(tc)
                 if not state.is_streaming:
@@ -702,6 +743,7 @@ class _StreamCore:
                         tc = TokiToolCall(
                             id=state.id,
                             function=TokiToolFunction(name=state.name, arguments=ev[1]),
+                            provider_state=state.provider_state,
                         )
                         self._finished_tool_calls.append(tc)
                         if not state.is_streaming:
@@ -851,8 +893,19 @@ class BaseModel(ABC):
     def __init__(self) -> None:
         # updated after every completion
         self._usage_metadata: TokiUsageMetadata | None = None
+        self._provider_state: dict[str, Any] | None = None
         # one-shot suppression keys for `_maybe_warn`
         self._warned: set[str] = set()
+
+    @property
+    def last_provider_state(self) -> dict[str, Any] | None:
+        """Opaque provider state from the most recently completed assistant turn."""
+        return self._provider_state
+
+    @property
+    def usage_metadata(self) -> TokiUsageMetadata | None:
+        """Token usage from the most recently completed request."""
+        return self._usage_metadata
 
     # ----- warning / capability hooks ----------------------------------------
 
@@ -1082,6 +1135,7 @@ class BaseModel(ABC):
         capture_thinking: bool = False,
         **kwargs,
     ):
+        self._provider_state = None
         if capture_thinking:
             self._maybe_warn_capture_thinking()
         normalized = [TokiMessage.from_dict(m) for m in messages]
@@ -1096,6 +1150,7 @@ class BaseModel(ABC):
                 streaming_names=streaming_names,
                 capture_thinking=capture_thinking,
                 on_usage=self._record_usage,
+                on_provider_state=self._record_provider_state,
                 on_finalize_invariants=lambda tcs: self._check_response_invariants(
                     tcs, declared_tool_names=declared_tool_names, allow_parallel=allow_parallel,
                 ),
@@ -1103,6 +1158,7 @@ class BaseModel(ABC):
             driver = _SyncStreamDriver(source, core)
             return driver.outer_generator()
         turn = self._raw_blocking(normalized, wire_tools, capture_thinking=capture_thinking, **kwargs)
+        self._provider_state = turn.provider_state
         self._check_response_invariants(
             turn.tool_calls, declared_tool_names=declared_tool_names, allow_parallel=allow_parallel,
         )
@@ -1161,6 +1217,7 @@ class BaseModel(ABC):
         capture_thinking: bool = False,
         **kwargs,
     ):
+        self._provider_state = None
         if capture_thinking:
             self._maybe_warn_capture_thinking()
         normalized = [TokiMessage.from_dict(m) for m in messages]
@@ -1175,6 +1232,7 @@ class BaseModel(ABC):
                 streaming_names=streaming_names,
                 capture_thinking=capture_thinking,
                 on_usage=self._record_usage,
+                on_provider_state=self._record_provider_state,
                 on_finalize_invariants=lambda tcs: self._check_response_invariants(
                     tcs, declared_tool_names=declared_tool_names, allow_parallel=allow_parallel,
                 ),
@@ -1217,6 +1275,9 @@ class BaseModel(ABC):
     def _record_usage(self, usage: TokiUsageMetadata) -> None:
         self._usage_metadata = usage
 
+    def _record_provider_state(self, provider_state: dict[str, Any]) -> None:
+        self._provider_state = provider_state
+
     def _build_blocking_response(
         self,
         turn: _RawTurn,
@@ -1225,6 +1286,7 @@ class BaseModel(ABC):
         capture_thinking: bool,
         async_mode: bool,
     ):
+        self._provider_state = turn.provider_state
         if turn.usage is not None:
             self._usage_metadata = turn.usage
 
@@ -1273,7 +1335,12 @@ def _prebuilt_stream_from_tool_call(tc: TokiToolCall) -> TokiToolCallStream:
     """Build a `TokiToolCallStream` whose state is pre-populated from a finished
     `TokiToolCall`. All `expect_arg` / `items()` calls become single-shot replays.
     """
-    s = TokiToolCallStream(driver=_PREBUILT_SYNC, id=tc.id, name=tc.function.name)
+    s = TokiToolCallStream(
+        driver=_PREBUILT_SYNC,
+        id=tc.id,
+        name=tc.function.name,
+        provider_state=tc.provider_state,
+    )
     args = tc.function.arguments
     s._args_order = list(args.keys())
     for k, v in args.items():
@@ -1286,7 +1353,12 @@ def _prebuilt_stream_from_tool_call(tc: TokiToolCall) -> TokiToolCallStream:
 
 def _async_prebuilt_stream_from_tool_call(tc: TokiToolCall) -> AsyncTokiToolCallStream:
     """Async sibling of `_prebuilt_stream_from_tool_call`."""
-    s = AsyncTokiToolCallStream(driver=_PREBUILT_ASYNC, id=tc.id, name=tc.function.name)
+    s = AsyncTokiToolCallStream(
+        driver=_PREBUILT_ASYNC,
+        id=tc.id,
+        name=tc.function.name,
+        provider_state=tc.provider_state,
+    )
     args = tc.function.arguments
     s._args_order = list(args.keys())
     for k, v in args.items():

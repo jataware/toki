@@ -94,6 +94,7 @@ jobs:
           uv run toki-fetch-google-models
           uv run toki-fetch-ollama-models
           uv run toki-fetch-local-models
+          uv run toki-fetch-bedrock-models
 
       - name: Detect snapshot changes
         id: changes
@@ -121,7 +122,8 @@ jobs:
               ["git", "diff", "origin/master", "--",
                "toki/openrouter/models.py", "toki/local/models.py",
                "toki/openai/models.py", "toki/anthropic/models.py",
-               "toki/google/models.py", "toki/ollama/models.py"],
+               "toki/google/models.py", "toki/ollama/models.py",
+               "toki/bedrock/models.py"],
               text=True,
           )
           plus: dict[str, set[str]] = defaultdict(set)
@@ -140,7 +142,7 @@ jobs:
               provider = current.split("/")[1]
               (plus if line.startswith("+") else minus)[provider].add(m.group(1))
 
-          providers = ["openrouter", "openai", "anthropic", "google", "ollama", "local"]
+          providers = ["openrouter", "openai", "anthropic", "google", "bedrock", "ollama", "local"]
           lines = [
               "## Summary",
               "",

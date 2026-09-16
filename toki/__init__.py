@@ -38,6 +38,21 @@ if TYPE_CHECKING:
     from .anthropic import AnthropicModel, AnthropicModelName, get_anthropic_api_key
     from .google import GoogleModel, GoogleModelName, get_google_api_key
     from .ollama import OllamaModel, OllamaModelName
+    from .bedrock import (
+        BedrockModel,
+        BedrockModelInfo,
+        BedrockModelName,
+        BedrockReasoningConfig,
+        ClaudeAdaptiveReasoning,
+        ClaudeBudgetReasoning,
+        NovaReasoning,
+        OpenAIReasoning,
+        adiscover_bedrock_models,
+        attributes_map as bedrock_attributes_map,
+        discover_bedrock_models,
+        get_bedrock_api_key,
+        list_bedrock_models,
+    )
 
 # Per-provider symbols exposed at the top level. Loaded lazily via
 # module-level `__getattr__` so that backends with optional dependencies don't
@@ -59,6 +74,19 @@ _LAZY: dict[str, tuple[str, str]] = {
     'get_google_api_key': ('toki.google', 'get_google_api_key'),
     'OllamaModel': ('toki.ollama', 'OllamaModel'),
     'OllamaModelName': ('toki.ollama', 'OllamaModelName'),
+    'BedrockModel': ('toki.bedrock', 'BedrockModel'),
+    'BedrockModelInfo': ('toki.bedrock', 'BedrockModelInfo'),
+    'BedrockModelName': ('toki.bedrock', 'BedrockModelName'),
+    'BedrockReasoningConfig': ('toki.bedrock', 'BedrockReasoningConfig'),
+    'ClaudeAdaptiveReasoning': ('toki.bedrock', 'ClaudeAdaptiveReasoning'),
+    'ClaudeBudgetReasoning': ('toki.bedrock', 'ClaudeBudgetReasoning'),
+    'NovaReasoning': ('toki.bedrock', 'NovaReasoning'),
+    'OpenAIReasoning': ('toki.bedrock', 'OpenAIReasoning'),
+    'adiscover_bedrock_models': ('toki.bedrock', 'adiscover_bedrock_models'),
+    'bedrock_attributes_map': ('toki.bedrock', 'attributes_map'),
+    'discover_bedrock_models': ('toki.bedrock', 'discover_bedrock_models'),
+    'get_bedrock_api_key': ('toki.bedrock', 'get_bedrock_api_key'),
+    'list_bedrock_models': ('toki.bedrock', 'list_bedrock_models'),
 }
 
 
@@ -119,4 +147,17 @@ __all__ = [
     'get_google_api_key',
     'OllamaModel',
     'OllamaModelName',
+    'BedrockModel',
+    'BedrockModelInfo',
+    'BedrockModelName',
+    'BedrockReasoningConfig',
+    'ClaudeAdaptiveReasoning',
+    'ClaudeBudgetReasoning',
+    'NovaReasoning',
+    'OpenAIReasoning',
+    'adiscover_bedrock_models',
+    'bedrock_attributes_map',
+    'discover_bedrock_models',
+    'get_bedrock_api_key',
+    'list_bedrock_models',
 ]

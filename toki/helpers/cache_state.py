@@ -29,6 +29,7 @@ import hashlib
 import json
 import time
 import warnings
+from base64 import b64encode
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -36,6 +37,21 @@ from ..model import TokiMessage
 
 
 _MAX_ENTRIES = 16
+
+
+def _json_default(value: object) -> dict[str, str]:
+    if isinstance(value, bytes):
+        return {"__toki_bytes__": b64encode(value).decode("ascii")}
+    raise TypeError(f"cannot serialize {type(value).__name__}")
+
+
+def _stable_json(value: object) -> bytes:
+    return json.dumps(
+        value,
+        default=_json_default,
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
 
 
 @dataclass
@@ -57,7 +73,7 @@ def _hash_messages(system: str | None, tools: list[dict] | None, messages: list[
     h = hashlib.sha256()
     h.update((system or "").encode("utf-8"))
     h.update(b"\x1e")  # record separator
-    h.update(json.dumps(tools or [], sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    h.update(_stable_json(tools or []))
     h.update(b"\x1e")
     for m in messages:
         h.update(m.role.encode("utf-8"))
@@ -66,12 +82,20 @@ def _hash_messages(system: str | None, tools: list[dict] | None, messages: list[
         h.update(b"\x1f")
         if m.tool_calls:
             tc_payload = [
-                {"id": tc.id, "type": tc.type, "name": tc.function.name, "arguments": tc.function.arguments}
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                    "provider_state": tc.provider_state,
+                }
                 for tc in m.tool_calls
             ]
-            h.update(json.dumps(tc_payload, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+            h.update(_stable_json(tc_payload))
         h.update(b"\x1f")
         h.update((m.tool_call_id or "").encode("utf-8"))
+        h.update(b"\x1f")
+        h.update(_stable_json(m.provider_state))
         h.update(b"\x1e")
     return h.hexdigest()
 
