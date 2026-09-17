@@ -15,3 +15,5 @@ __pycache__/
 
 # pytest auto-emitted HTML reports
 tests/results/
+# examples/harness per-workspace state (plan, config, history)
+.harness/

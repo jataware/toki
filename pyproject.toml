@@ -1,6 +1,6 @@
 [project]
 name = "toki"
-version = "1.5.0"
+version = "1.5.1"
 description = "Minimal universal LLM interface API"
 readme = "README.md"
 authors = [
@@ -37,6 +37,14 @@ packages = ["toki"]
 "toki/local/curated.txt" = "toki/local/curated.txt"
 
 [dependency-groups]
+# extras used by the scripts under examples/ (see examples/README.md and examples/harness/README.md)
+examples = [
+    "easyrepl>=0.2.0",
+    "pydantic>=2",
+    "rich>=13",
+    "prompt_toolkit>=3.0",
+    "textual>=8",
+]
 dev = [
     "easyrepl>=0.2.0",
     # used by the toki-fetch-local-models codegen script
@@ -50,7 +58,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "examples/harness/tests"]
 asyncio_mode = "auto"
 # Share one event loop across all async tests in a session. Per-function loops
 # (the pytest-asyncio default) cause litellm + httpx blow-ups: litellm caches
