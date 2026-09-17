@@ -28,15 +28,15 @@ print(response)
 Backend deps are split into extras. Install only what you need:
 
 ```bash
-pip install 'toki[ollama]'         # local models via a running Ollama daemon
-pip install 'toki[openrouter]'     # OpenRouter HTTP API
-pip install 'toki[openai]'              # OpenAI Chat Completions (via litellm)
-pip install 'toki[openai-responses]'    # OpenAI Responses API (official SDK)
-pip install 'toki[anthropic]'      # Anthropic Claude (via litellm)
-pip install 'toki[google]'         # Google Gemini AI Studio (via litellm)
-pip install 'toki[bedrock]'        # Amazon Bedrock Runtime via boto3
-pip install 'toki[local]'          # local models via HuggingFace transformers + torch
-pip install 'toki[all]'            # everything
+pip install 'toki[ollama]'            # local models via a running Ollama daemon
+pip install 'toki[openrouter]'        # OpenRouter HTTP API
+pip install 'toki[openai]'            # OpenAI Chat Completions (via litellm)
+pip install 'toki[openai-responses]'  # OpenAI Responses API (official SDK)
+pip install 'toki[anthropic]'         # Anthropic Claude (via litellm)
+pip install 'toki[google]'            # Google Gemini AI Studio (via litellm)
+pip install 'toki[bedrock]'           # Amazon Bedrock Runtime via boto3
+pip install 'toki[local]'             # local models via HuggingFace transformers + torch
+pip install 'toki[all]'               # everything
 ```
 
 Plain `pip install toki` installs only the backend-agnostic core (`BaseModel`, `Agent`, types, state machines, `streaming_parse_json`).
