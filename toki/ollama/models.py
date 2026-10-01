@@ -14,9 +14,6 @@ from dataclasses import dataclass
 
 
 OllamaModelName = Literal[
-    'aya:35b',
-    'aya:8b',
-    'aya:latest',
     'codegemma:2b',
     'codegemma:7b',
     'codegemma:latest',
@@ -62,6 +59,8 @@ OllamaModelName = Literal[
     'deepseek-v2:latest',
     'deepseek-v3:671b',
     'deepseek-v3:latest',
+    'devstral-small-2:24b',
+    'devstral-small-2:latest',
     'dolphin-llama3:70b',
     'dolphin-llama3:8b',
     'dolphin-llama3:latest',
@@ -100,7 +99,6 @@ OllamaModelName = Literal[
     'gemma:7b',
     'gemma:latest',
     'glm-4.7-flash:latest',
-    'glm-5.1:latest',
     'glm-ocr:latest',
     'glm4:9b',
     'glm4:latest',
@@ -131,6 +129,9 @@ OllamaModelName = Literal[
     'lfm2.5-thinking:latest',
     'lfm2:24b',
     'lfm2:latest',
+    'llama2-chinese:13b',
+    'llama2-chinese:7b',
+    'llama2-chinese:latest',
     'llama2-uncensored:70b',
     'llama2-uncensored:7b',
     'llama2-uncensored:latest',
@@ -347,9 +348,6 @@ class Attr:
 
 
 attributes_map: dict[OllamaModelName, Attr] = {
-    "aya:35b":                                      Attr(context_size=8192, supports_tools=False, supports_thinking=False),
-    "aya:8b":                                       Attr(context_size=8192, supports_tools=False, supports_thinking=False),
-    "aya:latest":                                   Attr(context_size=8192, supports_tools=False, supports_thinking=False),
     "codegemma:2b":                                 Attr(context_size=8192, supports_tools=False, supports_thinking=False),
     "codegemma:7b":                                 Attr(context_size=8192, supports_tools=False, supports_thinking=False),
     "codegemma:latest":                             Attr(context_size=8192, supports_tools=False, supports_thinking=False),
@@ -395,6 +393,8 @@ attributes_map: dict[OllamaModelName, Attr] = {
     "deepseek-v2:latest":                           Attr(context_size=163840, supports_tools=False, supports_thinking=False),
     "deepseek-v3:671b":                             Attr(context_size=163840, supports_tools=False, supports_thinking=False),
     "deepseek-v3:latest":                           Attr(context_size=163840, supports_tools=False, supports_thinking=False),
+    "devstral-small-2:24b":                         Attr(context_size=393216, supports_tools=True, supports_thinking=False),
+    "devstral-small-2:latest":                      Attr(context_size=393216, supports_tools=True, supports_thinking=False),
     "dolphin-llama3:70b":                           Attr(context_size=8192, supports_tools=False, supports_thinking=False),
     "dolphin-llama3:8b":                            Attr(context_size=8192, supports_tools=False, supports_thinking=False),
     "dolphin-llama3:latest":                        Attr(context_size=8192, supports_tools=False, supports_thinking=False),
@@ -433,7 +433,6 @@ attributes_map: dict[OllamaModelName, Attr] = {
     "gemma:7b":                                     Attr(context_size=8192, supports_tools=False, supports_thinking=False),
     "gemma:latest":                                 Attr(context_size=8192, supports_tools=False, supports_thinking=False),
     "glm-4.7-flash:latest":                         Attr(context_size=202752, supports_tools=True, supports_thinking=True),
-    "glm-5.1:latest":                               Attr(context_size=202752, supports_tools=True, supports_thinking=True),
     "glm-ocr:latest":                               Attr(context_size=131072, supports_tools=True, supports_thinking=False),
     "glm4:9b":                                      Attr(context_size=131072, supports_tools=False, supports_thinking=False),
     "glm4:latest":                                  Attr(context_size=131072, supports_tools=False, supports_thinking=False),
@@ -464,6 +463,9 @@ attributes_map: dict[OllamaModelName, Attr] = {
     "lfm2.5-thinking:latest":                       Attr(context_size=128000, supports_tools=True, supports_thinking=True),
     "lfm2:24b":                                     Attr(context_size=32768, supports_tools=True, supports_thinking=False),
     "lfm2:latest":                                  Attr(context_size=32768, supports_tools=True, supports_thinking=False),
+    "llama2-chinese:13b":                           Attr(context_size=4096, supports_tools=False, supports_thinking=False),
+    "llama2-chinese:7b":                            Attr(context_size=4096, supports_tools=False, supports_thinking=False),
+    "llama2-chinese:latest":                        Attr(context_size=4096, supports_tools=False, supports_thinking=False),
     "llama2-uncensored:70b":                        Attr(context_size=2048, supports_tools=False, supports_thinking=False),
     "llama2-uncensored:7b":                         Attr(context_size=2048, supports_tools=False, supports_thinking=False),
     "llama2-uncensored:latest":                     Attr(context_size=2048, supports_tools=False, supports_thinking=False),

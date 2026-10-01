@@ -6,11 +6,6 @@ from dataclasses import dataclass
 
 
 AnthropicModelName = Literal[
-    'claude-3-7-sonnet-20250219',
-    'claude-3-haiku-20240307',
-    'claude-3-opus-20240229',
-    'claude-4-opus-20250514',
-    'claude-4-sonnet-20250514',
     'claude-fable-5',
     'claude-fable-5-1',
     'claude-haiku-4-5',
@@ -18,9 +13,6 @@ AnthropicModelName = Literal[
     'claude-mythos-5',
     'claude-mythos-5-1',
     'claude-mythos-preview',
-    'claude-opus-4-1',
-    'claude-opus-4-1-20250805',
-    'claude-opus-4-20250514',
     'claude-opus-4-5',
     'claude-opus-4-5-20251101',
     'claude-opus-4-6',
@@ -29,11 +21,12 @@ AnthropicModelName = Literal[
     'claude-opus-4-7-20260416',
     'claude-opus-4-8',
     'claude-opus-5',
-    'claude-sonnet-4-20250514',
+    'claude-opus-5-5',
     'claude-sonnet-4-5',
     'claude-sonnet-4-5-20250929',
     'claude-sonnet-4-6',
-    'claude-sonnet-5'
+    'claude-sonnet-5',
+    'claude-sonnet-5-5'
 ]
 
 
@@ -46,11 +39,6 @@ class Attr:
 
 
 attributes_map: dict[AnthropicModelName, Attr] = {
-    "claude-3-7-sonnet-20250219":                               Attr(context_size=200000, supports_tools=True, supports_thinking=True),
-    "claude-3-haiku-20240307":                                  Attr(context_size=200000, supports_tools=True, supports_thinking=False),
-    "claude-3-opus-20240229":                                   Attr(context_size=200000, supports_tools=True, supports_thinking=False),
-    "claude-4-opus-20250514":                                   Attr(context_size=200000, supports_tools=True, supports_thinking=True),
-    "claude-4-sonnet-20250514":                                 Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
     "claude-fable-5":                                           Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
     "claude-fable-5-1":                                         Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
     "claude-haiku-4-5":                                         Attr(context_size=200000, supports_tools=True, supports_thinking=True),
@@ -58,9 +46,6 @@ attributes_map: dict[AnthropicModelName, Attr] = {
     "claude-mythos-5":                                          Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
     "claude-mythos-5-1":                                        Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
     "claude-mythos-preview":                                    Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
-    "claude-opus-4-1":                                          Attr(context_size=200000, supports_tools=True, supports_thinking=True),
-    "claude-opus-4-1-20250805":                                 Attr(context_size=200000, supports_tools=True, supports_thinking=True),
-    "claude-opus-4-20250514":                                   Attr(context_size=200000, supports_tools=True, supports_thinking=True),
     "claude-opus-4-5":                                          Attr(context_size=200000, supports_tools=True, supports_thinking=True),
     "claude-opus-4-5-20251101":                                 Attr(context_size=200000, supports_tools=True, supports_thinking=True),
     "claude-opus-4-6":                                          Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
@@ -69,9 +54,10 @@ attributes_map: dict[AnthropicModelName, Attr] = {
     "claude-opus-4-7-20260416":                                 Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
     "claude-opus-4-8":                                          Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
     "claude-opus-5":                                            Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
-    "claude-sonnet-4-20250514":                                 Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
-    "claude-sonnet-4-5":                                        Attr(context_size=200000, supports_tools=True, supports_thinking=True),
-    "claude-sonnet-4-5-20250929":                               Attr(context_size=200000, supports_tools=True, supports_thinking=True),
+    "claude-opus-5-5":                                          Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
+    "claude-sonnet-4-5":                                        Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
+    "claude-sonnet-4-5-20250929":                               Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
     "claude-sonnet-4-6":                                        Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
-    "claude-sonnet-5":                                          Attr(context_size=1000000, supports_tools=True, supports_thinking=True)
+    "claude-sonnet-5":                                          Attr(context_size=1000000, supports_tools=True, supports_thinking=True),
+    "claude-sonnet-5-5":                                        Attr(context_size=1000000, supports_tools=True, supports_thinking=True)
 }

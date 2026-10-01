@@ -6,20 +6,14 @@ from dataclasses import dataclass
 
 
 GoogleModelName = Literal[
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-001',
-    'gemini-2.0-flash-lite',
-    'gemini-2.0-flash-lite-001',
+    'deep-research-max-preview-04-2026',
+    'deep-research-preview-04-2026',
     'gemini-2.5-computer-use-preview-10-2025',
     'gemini-2.5-flash',
     'gemini-2.5-flash-lite',
-    'gemini-2.5-flash-lite-preview-06-17',
-    'gemini-2.5-flash-lite-preview-09-2025',
-    'gemini-2.5-flash-preview-09-2025',
     'gemini-2.5-pro',
     'gemini-2.5-pro-preview-tts',
     'gemini-3-flash-preview',
-    'gemini-3-pro-preview',
     'gemini-3.1-flash-lite',
     'gemini-3.1-flash-lite-preview',
     'gemini-3.1-pro-preview',
@@ -38,9 +32,8 @@ GoogleModelName = Literal[
     'gemini-omni-1.1-flash',
     'gemini-omni-flash-preview',
     'gemini-pro-latest',
-    'gemini-robotics-er-1.5-preview',
-    'gemini-robotics-er-1.6-preview',
     'gemini-robotics-er-2-preview',
+    'gemini-robotics-er-2-streaming-preview',
     'gemma-3-27b-it',
     'gemma-4-26b-a4b-it',
     'gemma-4-31b-it',
@@ -49,7 +42,8 @@ GoogleModelName = Literal[
     'lyria-3-pro-preview',
     'lyria-3.5',
     'lyria-3.5-clip-preview',
-    'lyria-3.5-pro-preview'
+    'lyria-3.5-pro-preview',
+    'lyria-realtime-exp'
 ]
 
 
@@ -62,20 +56,14 @@ class Attr:
 
 
 attributes_map: dict[GoogleModelName, Attr] = {
-    "gemini-2.0-flash":                                         Attr(context_size=1048576, supports_tools=True, supports_thinking=False),
-    "gemini-2.0-flash-001":                                     Attr(context_size=1048576, supports_tools=True, supports_thinking=False),
-    "gemini-2.0-flash-lite":                                    Attr(context_size=1048576, supports_tools=True, supports_thinking=False),
-    "gemini-2.0-flash-lite-001":                                Attr(context_size=1048576, supports_tools=True, supports_thinking=False),
+    "deep-research-max-preview-04-2026":                        Attr(context_size=131072, supports_tools=False, supports_thinking=False),
+    "deep-research-preview-04-2026":                            Attr(context_size=131072, supports_tools=False, supports_thinking=False),
     "gemini-2.5-computer-use-preview-10-2025":                  Attr(context_size=128000, supports_tools=True, supports_thinking=False),
     "gemini-2.5-flash":                                         Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
     "gemini-2.5-flash-lite":                                    Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
-    "gemini-2.5-flash-lite-preview-06-17":                      Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
-    "gemini-2.5-flash-lite-preview-09-2025":                    Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
-    "gemini-2.5-flash-preview-09-2025":                         Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
     "gemini-2.5-pro":                                           Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
     "gemini-2.5-pro-preview-tts":                               Attr(context_size=1048576, supports_tools=True, supports_thinking=False),
     "gemini-3-flash-preview":                                   Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
-    "gemini-3-pro-preview":                                     Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
     "gemini-3.1-flash-lite":                                    Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
     "gemini-3.1-flash-lite-preview":                            Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
     "gemini-3.1-pro-preview":                                   Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
@@ -91,12 +79,11 @@ attributes_map: dict[GoogleModelName, Attr] = {
     "gemini-flash-lite-latest":                                 Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
     "gemini-gemma-2-27b-it":                                    Attr(context_size=8192, supports_tools=True, supports_thinking=False),
     "gemini-gemma-2-9b-it":                                     Attr(context_size=8192, supports_tools=True, supports_thinking=False),
-    "gemini-omni-1.1-flash":                                    Attr(context_size=131072, supports_tools=False, supports_thinking=True),
+    "gemini-omni-1.1-flash":                                    Attr(context_size=1048576, supports_tools=False, supports_thinking=True),
     "gemini-omni-flash-preview":                                Attr(context_size=1048576, supports_tools=False, supports_thinking=True),
     "gemini-pro-latest":                                        Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
-    "gemini-robotics-er-1.5-preview":                           Attr(context_size=1048576, supports_tools=True, supports_thinking=True),
-    "gemini-robotics-er-1.6-preview":                           Attr(context_size=131072, supports_tools=True, supports_thinking=True),
     "gemini-robotics-er-2-preview":                             Attr(context_size=131072, supports_tools=True, supports_thinking=True),
+    "gemini-robotics-er-2-streaming-preview":                   Attr(context_size=131072, supports_tools=True, supports_thinking=True),
     "gemma-3-27b-it":                                           Attr(context_size=131072, supports_tools=True, supports_thinking=False),
     "gemma-4-26b-a4b-it":                                       Attr(context_size=262144, supports_tools=True, supports_thinking=True),
     "gemma-4-31b-it":                                           Attr(context_size=262144, supports_tools=True, supports_thinking=True),
@@ -105,5 +92,6 @@ attributes_map: dict[GoogleModelName, Attr] = {
     "lyria-3-pro-preview":                                      Attr(context_size=131072, supports_tools=False, supports_thinking=False),
     "lyria-3.5":                                                Attr(context_size=1048576, supports_tools=False, supports_thinking=False),
     "lyria-3.5-clip-preview":                                   Attr(context_size=131072, supports_tools=False, supports_thinking=False),
-    "lyria-3.5-pro-preview":                                    Attr(context_size=131072, supports_tools=False, supports_thinking=False)
+    "lyria-3.5-pro-preview":                                    Attr(context_size=131072, supports_tools=False, supports_thinking=False),
+    "lyria-realtime-exp":                                       Attr(context_size=1048576, supports_tools=False, supports_thinking=False)
 }
