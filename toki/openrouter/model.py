@@ -57,7 +57,7 @@ class OpenRouterResponseCompletionChoice(TypedDict):
 
 class OpenRouterResponse(TypedDict):
     choices: list[OpenRouterResponseCompletionChoice]
-    usage: TokiUsageMetadata
+    usage: dict  # OpenAI-shaped usage object; see `_usage_from_wire`
 
 
 class OpenRouterResponseDeltaPayload(TypedDict):
@@ -73,7 +73,7 @@ class OpenRouterResponseChoice(TypedDict):
 
 class OpenRouterResponseDelta(TypedDict):
     choices: list[OpenRouterResponseChoice]
-    usage: NotRequired[TokiUsageMetadata]  # typically only on the final chunk
+    usage: NotRequired[dict]  # typically only on the final chunk; see `_usage_from_wire`
 
 
 class OpenRouterResponseError(TypedDict):
@@ -485,7 +485,7 @@ def _turn_from_blocking_json(data: Any, *, capture_thinking: bool) -> _RawTurn:
     if 'error' in data:
         raise ValueError(f"Error from OpenRouter: {data}")
     try:
-        usage = cast(TokiUsageMetadata, data['usage'])
+        usage = _usage_from_wire(data['usage'])
         message = data['choices'][0]['message']
         content = message.get('content', '') or ''
         raw_tcs = message.get('tool_calls') or []
@@ -526,8 +526,22 @@ def _parse_sse_event(data: str) -> Iterator[_RawChunk]:
         for tc_delta in delta.get("tool_calls") or []:
             yield _tool_call_chunk_from_delta(tc_delta)
 
-    if "usage" in obj:
-        yield _RawUsage(usage=cast(TokiUsageMetadata, obj["usage"]))  # type: ignore[index]
+    if obj.get("usage"):
+        yield _RawUsage(usage=_usage_from_wire(obj["usage"]))  # type: ignore[index]
+
+
+def _usage_from_wire(raw: dict) -> TokiUsageMetadata:
+    """Build a `TokiUsageMetadata` from an OpenRouter `usage` object (the wire shape is OpenAI's, plus cache writes)."""
+    prompt_tokens = raw.get("prompt_tokens") or 0
+    completion_tokens = raw.get("completion_tokens") or 0
+    details = raw.get("prompt_tokens_details") or {}
+    return TokiUsageMetadata(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=raw.get("total_tokens") or prompt_tokens + completion_tokens,
+        cache_read_tokens=details.get("cached_tokens") or 0,
+        cache_write_tokens=details.get("cache_write_tokens") or 0,
+    )
 
 
 def _tool_call_chunk_from_delta(tc_delta: dict) -> _RawToolCallChunk:

@@ -15,6 +15,8 @@ response = agent.execute()
 print(response)
 ```
 
+Extra keyword arguments to `agent.execute()` / `agent.aexecute()` (e.g. `max_tokens=200`, `temperature=0`) are passed straight through to the model's `complete()` / `acomplete()`.
+
 ## Feature Overview
 - **Same code, any backend.** OpenRouter, OpenAI, Anthropic, Google, Amazon Bedrock, Ollama, and local HuggingFace models all share one `BaseModel` interface; blocking completions, streaming, sync, async, tools, and thinking capture work identically across providers.
 - **Streaming, all the way down.** Yields content tokens, thinking tokens, *and* tool-call argument values as they arrive. Most libraries only stream content text; toki lets you consume a tool's args character-by-character while the model is still emitting them.
@@ -476,7 +478,7 @@ For native Google: cache creation goes through `client.caches.create()` (or `cli
 
 A note on shared models across concurrent agents: `_CacheState` lives on the model instance, so sharing one strategy-bearing model across multiple `Agent`s with diverging histories will thrash the cache (each agent's prefix invalidates the other's anchor). Use one model per long-running agent.
 
-After a request, `model.usage_metadata` reports normalized prompt, completion, and total tokens. `cache_read_tokens` and `cache_write_tokens` default to zero and are populated by Bedrock when present. Bedrock's `prompt_tokens` includes uncached, cache-read, and cache-write input, so `total_tokens == prompt_tokens + completion_tokens` remains true.
+After a request, `model.usage_metadata` reports normalized prompt, completion, and total tokens. `cache_read_tokens` and `cache_write_tokens` default to zero and are populated by Bedrock and OpenRouter when present. Bedrock's `prompt_tokens` includes uncached, cache-read, and cache-write input, so `total_tokens == prompt_tokens + completion_tokens` remains true.
 
 ## Token counting
 
