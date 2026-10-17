@@ -527,7 +527,7 @@ class OpenRouterModel(BaseModel):
             response = self._session().post(
                 _API_URL, headers=self._headers(stream=False), json=payload, timeout=self._requests_timeout(stream=False)
             )
-        return _turn_from_blocking_json(response.json(), capture_thinking=capture_thinking)
+        return _turn_from_blocking_json(_blocking_response_json(response), capture_thinking=capture_thinking)
 
     def _raw_streaming(
         self,
@@ -577,7 +577,7 @@ class OpenRouterModel(BaseModel):
         with self._clarify_timeouts(stream=False):
             async with httpx.AsyncClient(timeout=self._httpx_timeout(stream=False)) as client:
                 response = await client.post(_API_URL, headers=self._headers(stream=False), json=payload)
-        return _turn_from_blocking_json(response.json(), capture_thinking=capture_thinking)
+        return _turn_from_blocking_json(_blocking_response_json(response), capture_thinking=capture_thinking)
 
     async def _raw_streaming_async(
         self,
@@ -619,6 +619,48 @@ def _with_message(e: requests.exceptions.RequestException | httpx.RequestError, 
     except RuntimeError:  # httpx raises when no request was attached
         request = None
     return type(e)(message, request=request)
+
+
+# how much of an unparseable / unexpected response body to quote in errors
+_ERROR_BODY_PREVIEW_CHARS = 500
+
+
+def _blocking_response_json(response: requests.Response | httpx.Response) -> Any:
+    """Parse a non-streaming OpenRouter response, checking the HTTP status.
+
+    - JSON body with an `error` key (any status — OpenRouter sometimes sends
+      these with a 200): returned as-is so `_turn_from_blocking_json` raises
+      its usual `ValueError("Error from OpenRouter: ...")`.
+    - Any other non-2xx: raises the transport's status error, like the
+      streaming paths' `raise_for_status()` (`requests.HTTPError` /
+      `httpx.HTTPStatusError`, response attached so callers can inspect the
+      status and `Retry-After` for 429/5xx), with the status and a truncated
+      body in the message. Toki does not retry.
+    - 2xx with a non-JSON body: `ValueError` quoting the truncated body.
+    """
+    try:
+        data, parsed = response.json(), True
+    except ValueError:  # requests' and httpx's JSON decode errors both subclass ValueError
+        data, parsed = None, False
+    if parsed and isinstance(data, dict) and 'error' in data:
+        return data
+    status = response.status_code
+    if 200 <= status < 300 and parsed:
+        return data
+    text = response.text
+    preview = text[:_ERROR_BODY_PREVIEW_CHARS] + (f"... [{len(text)} chars total]" if len(text) > _ERROR_BODY_PREVIEW_CHARS else "")
+    if 200 <= status < 300:
+        raise ValueError(f"OpenRouter returned a non-JSON response (HTTP {status}): {preview!r}")
+    reason = response.reason if isinstance(response, requests.Response) else response.reason_phrase
+    retry_after = response.headers.get('Retry-After')
+    message = (
+        f"OpenRouter returned HTTP {status} {reason}"
+        + (f" (Retry-After: {retry_after})" if retry_after else "")
+        + f": {preview!r}"
+    )
+    if isinstance(response, requests.Response):
+        raise requests.exceptions.HTTPError(message, request=response.request, response=response)
+    raise httpx.HTTPStatusError(message, request=response.request, response=response)
 
 
 def _turn_from_blocking_json(data: Any, *, capture_thinking: bool) -> _RawTurn:
