@@ -1,9 +1,13 @@
 import json
+import os
 import warnings
+from contextlib import contextmanager
 from typing import Any, AsyncIterator, Iterator, Literal, TypedDict, cast
 
 import httpx
 import requests
+import urllib3
+from requests.adapters import HTTPAdapter
 from typing_extensions import NotRequired
 
 from ..anthropic.utils import _with_text_cache_marker, apply_cache_markers, build_cache_control
@@ -36,6 +40,29 @@ _OPENROUTER_OFFLINE_SAFETY_FACTOR_DEFAULT = 1.15
 # tokens before any cache write happens. We use the same chars/4 estimate
 # the rest of toki does.
 _OPENROUTER_MIN_CACHE_TOKENS = 1024
+
+
+# Network timeouts, in seconds (`None` disables that limit). Overridable per
+# instance via the matching `OpenRouterModel` constructor kwargs.
+#
+#   - connect: TCP + TLS setup, applied per resolved address. urllib3 walks
+#     getaddrinfo's results in order, so an address that black-holes (e.g. an
+#     unroutable IPv6 AAAA record) costs one connect timeout and then the next
+#     address is tried. Without a limit the first address hangs forever.
+#   - read: longest silence tolerated from the server. For non-streaming calls
+#     that is roughly time-to-full-response, which on reasoning models can
+#     legitimately be several minutes, hence the generous default.
+#   - stream read: longest gap between SSE chunks on streaming calls. OpenRouter
+#     sends keep-alive comments while the upstream is still working, so this can
+#     be much tighter than the non-streaming read timeout.
+_OPENROUTER_CONNECT_TIMEOUT_DEFAULT = 10.0
+_OPENROUTER_READ_TIMEOUT_DEFAULT = 600.0
+_OPENROUTER_STREAM_READ_TIMEOUT_DEFAULT = 60.0
+
+# Connections kept alive per `OpenRouterModel` (sync path). Above urllib3's
+# default of 10 so threaded callers sharing one model still reuse connections
+# instead of dialing (and paying any connect-timeout fallback) again.
+_OPENROUTER_POOL_MAXSIZE = 32
 
 
 class OpenRouterReasoningDetail(TypedDict):
@@ -141,6 +168,25 @@ class OpenRouterModel(BaseModel):
     drops the historical anchor list. The `_CacheState` helper retains every
     historical anchor so reverting to a previously-cached prefix silently
     rehydrates without re-snapshotting.
+
+    Network timeouts (seconds; `None` disables that limit), all mutable
+    attributes like `cache`:
+
+      - `connect_timeout` (default 10) — per resolved address, so a
+        black-holed address (e.g. broken IPv6) costs this much before the
+        next address is tried.
+      - `read_timeout` (default 600) — longest server silence on non-streaming
+        calls (completions and online `count_tokens`); effectively the
+        time-to-response budget, so keep it generous for reasoning models.
+      - `stream_read_timeout` (default 60) — longest gap between chunks on
+        streaming calls.
+
+    A timeout raises the transport's own exception type (`requests.ConnectTimeout`
+    / `requests.ReadTimeout` on the sync path, `httpx.ConnectTimeout` /
+    `httpx.ReadTimeout` etc. on the async path) with a message naming the
+    limit that fired. Sync calls reuse pooled keep-alive connections from a
+    per-instance `requests.Session`, so only a new connection pays a
+    connect-timeout fallback.
     """
 
     def __init__(
@@ -152,6 +198,9 @@ class OpenRouterModel(BaseModel):
         reasoning_effort: ReasoningEffort | None = None,
         cache: Literal['rolling', 'static'] | None = None,
         cache_ttl: Literal['5m', '1h'] = '5m',
+        connect_timeout: float | None = _OPENROUTER_CONNECT_TIMEOUT_DEFAULT,
+        read_timeout: float | None = _OPENROUTER_READ_TIMEOUT_DEFAULT,
+        stream_read_timeout: float | None = _OPENROUTER_STREAM_READ_TIMEOUT_DEFAULT,
     ):
         super().__init__()
         self.model = model
@@ -160,6 +209,13 @@ class OpenRouterModel(BaseModel):
         self.reasoning_effort = reasoning_effort
         self.cache = cache
         self.cache_ttl = cache_ttl
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        self.stream_read_timeout = stream_read_timeout
+        # created lazily by `_session()`; tagged with the creating pid so a
+        # forked child never shares the parent's pooled sockets
+        self._requests_session: requests.Session | None = None
+        self._requests_session_pid: int | None = None
         self._cache_state = _CacheState(min_cache_size_estimate=_OPENROUTER_MIN_CACHE_TOKENS)
         if cache is not None and self._cache_route() is None:
             warnings.warn(
@@ -260,7 +316,7 @@ class OpenRouterModel(BaseModel):
                 safety_factor=safety_factor,
             )
         payload = _build_count_payload(self.model, wire_messages, wire_tools)
-        with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        with self._clarify_timeouts(stream=False), httpx.Client(timeout=self._httpx_timeout(stream=False)) as client:
             r = client.post(_API_URL, headers=self._headers(stream=False), json=payload)
             r.raise_for_status()
             data = r.json()
@@ -290,10 +346,11 @@ class OpenRouterModel(BaseModel):
                 safety_factor=safety_factor,
             )
         payload = _build_count_payload(self.model, wire_messages, wire_tools)
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            r = await client.post(_API_URL, headers=self._headers(stream=False), json=payload)
-            r.raise_for_status()
-            data = r.json()
+        with self._clarify_timeouts(stream=False):
+            async with httpx.AsyncClient(timeout=self._httpx_timeout(stream=False)) as client:
+                r = await client.post(_API_URL, headers=self._headers(stream=False), json=payload)
+                r.raise_for_status()
+                data = r.json()
         return _prompt_tokens_from_count_response(data)
 
     def _cache_route(self) -> Literal['anthropic', 'google'] | None:
@@ -391,6 +448,72 @@ class OpenRouterModel(BaseModel):
             h["Accept"] = "text/event-stream"
         return h
 
+    # ----- transport ---------------------------------------------------------
+
+    def _session(self) -> requests.Session:
+        """Per-instance `requests.Session` so sync calls reuse keep-alive
+        connections: only a freshly dialed connection pays connect-timeout
+        fallbacks (e.g. a black-holed IPv6 address before IPv4 is tried).
+        Created lazily and re-created after `os.fork()`. Every request passes
+        its own headers and timeout and toki never reconfigures the session,
+        so the only shared mutable state is urllib3's connection pool and
+        requests' cookie jar, both lock-protected; concurrent calls from
+        several threads on one model are fine."""
+        pid = os.getpid()
+        if self._requests_session is None or self._requests_session_pid != pid:
+            session = requests.Session()
+            session.mount("https://", HTTPAdapter(pool_maxsize=_OPENROUTER_POOL_MAXSIZE))
+            self._requests_session = session
+            self._requests_session_pid = pid
+        return self._requests_session
+
+    def _requests_timeout(self, *, stream: bool) -> tuple[float | None, float | None]:
+        return (self.connect_timeout, self.stream_read_timeout if stream else self.read_timeout)
+
+    def _httpx_timeout(self, *, stream: bool) -> httpx.Timeout:
+        # matches the previous shape: read/write/pool share one budget
+        return httpx.Timeout(self.stream_read_timeout if stream else self.read_timeout, connect=self.connect_timeout)
+
+    @contextmanager
+    def _clarify_timeouts(self, *, stream: bool) -> Iterator[None]:
+        """Re-raise transport timeouts as the same exception type with a
+        message naming the OpenRouter limit that fired and how to change it,
+        so `except requests.Timeout` / `except httpx.TimeoutException`
+        handlers keep working.
+
+        A read stall after the response headers arrived (e.g. mid-SSE-stream)
+        surfaces from `requests` as `requests.ConnectionError` wrapping
+        urllib3's `ReadTimeoutError`; it keeps that type but gets the same
+        read-timeout message."""
+        read_attr = 'stream_read_timeout' if stream else 'read_timeout'
+
+        def read_message(e: Exception) -> str:
+            return (
+                f"OpenRouter request for {self.model!r} got no data within "
+                f"{read_attr}={getattr(self, read_attr)}s. Long reasoning calls may need more; "
+                f"adjust via OpenRouterModel({read_attr}=...). Cause: {e}"
+            )
+
+        try:
+            yield
+        except (requests.exceptions.ConnectTimeout, httpx.ConnectTimeout) as e:
+            raise _with_message(e, (
+                f"OpenRouter request for {self.model!r} could not connect to openrouter.ai within "
+                f"connect_timeout={self.connect_timeout}s (per resolved address). Check DNS/IPv6 "
+                f"routing, or adjust via OpenRouterModel(connect_timeout=...). Cause: {e}"
+            )) from e
+        except (requests.exceptions.ReadTimeout, httpx.ReadTimeout) as e:
+            raise _with_message(e, read_message(e)) from e
+        except requests.exceptions.ConnectionError as e:
+            if not (e.args and isinstance(e.args[0], urllib3.exceptions.ReadTimeoutError)):
+                raise
+            raise _with_message(e, read_message(e)) from e
+        except httpx.TimeoutException as e:  # write / pool timeouts on the async path
+            raise _with_message(e, (
+                f"OpenRouter request for {self.model!r} timed out ({type(e).__name__}). "
+                f"Adjust via OpenRouterModel({read_attr}=...). Cause: {e}"
+            )) from e
+
     def _raw_blocking(
         self,
         messages: list[TokiMessage],
@@ -400,7 +523,10 @@ class OpenRouterModel(BaseModel):
         **kwargs,
     ) -> _RawTurn:
         payload = self._build_payload(messages, tools, capture_thinking, stream=False, kwargs=kwargs)
-        response = requests.post(url=_API_URL, headers=self._headers(stream=False), json=payload)
+        with self._clarify_timeouts(stream=False):
+            response = self._session().post(
+                _API_URL, headers=self._headers(stream=False), json=payload, timeout=self._requests_timeout(stream=False)
+            )
         return _turn_from_blocking_json(response.json(), capture_thinking=capture_thinking)
 
     def _raw_streaming(
@@ -413,7 +539,9 @@ class OpenRouterModel(BaseModel):
     ) -> Iterator[_RawChunk]:
         payload = self._build_payload(messages, tools, capture_thinking, stream=True, kwargs=kwargs)
 
-        with requests.post(_API_URL, headers=self._headers(stream=True), json=payload, stream=True, timeout=(10, 60)) as r:
+        with self._clarify_timeouts(stream=True), self._session().post(
+            _API_URL, headers=self._headers(stream=True), json=payload, stream=True, timeout=self._requests_timeout(stream=True)
+        ) as r:
             r.raise_for_status()
             r.encoding = "utf-8"
 
@@ -446,8 +574,9 @@ class OpenRouterModel(BaseModel):
         **kwargs,
     ) -> _RawTurn:
         payload = self._build_payload(messages, tools, capture_thinking, stream=False, kwargs=kwargs)
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            response = await client.post(_API_URL, headers=self._headers(stream=False), json=payload)
+        with self._clarify_timeouts(stream=False):
+            async with httpx.AsyncClient(timeout=self._httpx_timeout(stream=False)) as client:
+                response = await client.post(_API_URL, headers=self._headers(stream=False), json=payload)
         return _turn_from_blocking_json(response.json(), capture_thinking=capture_thinking)
 
     async def _raw_streaming_async(
@@ -460,23 +589,36 @@ class OpenRouterModel(BaseModel):
     ) -> AsyncIterator[_RawChunk]:
         payload = self._build_payload(messages, tools, capture_thinking, stream=True, kwargs=kwargs)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            async with client.stream("POST", _API_URL, headers=self._headers(stream=True), json=payload) as r:
-                r.raise_for_status()
-                buf: list[str] = []
-                async for line in r.aiter_lines():
-                    if line.startswith("data:"):
-                        buf.append(line[5:].lstrip())
-                        continue
-                    if line == "":
-                        if not buf:
+        with self._clarify_timeouts(stream=True):
+            async with httpx.AsyncClient(timeout=self._httpx_timeout(stream=True)) as client:
+                async with client.stream("POST", _API_URL, headers=self._headers(stream=True), json=payload) as r:
+                    r.raise_for_status()
+                    buf: list[str] = []
+                    async for line in r.aiter_lines():
+                        if line.startswith("data:"):
+                            buf.append(line[5:].lstrip())
                             continue
-                        data = "\n".join(buf)
-                        buf.clear()
-                        if data == "[DONE]":
-                            return
-                        for raw in _parse_sse_event(data):
-                            yield raw
+                        if line == "":
+                            if not buf:
+                                continue
+                            data = "\n".join(buf)
+                            buf.clear()
+                            if data == "[DONE]":
+                                return
+                            for raw in _parse_sse_event(data):
+                                yield raw
+
+
+def _with_message(e: requests.exceptions.RequestException | httpx.RequestError, message: str) -> Exception:
+    """Rebuild a requests/httpx exception as the same type with a new message,
+    keeping the attached request (and response, for requests)."""
+    if isinstance(e, requests.exceptions.RequestException):
+        return type(e)(message, request=e.request, response=e.response)
+    try:
+        request = e.request
+    except RuntimeError:  # httpx raises when no request was attached
+        request = None
+    return type(e)(message, request=request)
 
 
 def _turn_from_blocking_json(data: Any, *, capture_thinking: bool) -> _RawTurn:

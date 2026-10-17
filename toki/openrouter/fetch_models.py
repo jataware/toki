@@ -21,7 +21,7 @@ def _get_openrouter_models(api_key: str) -> list[dict]:
     """Get the list of models (including all metadata) from OpenRouter API"""
     url = "https://openrouter.ai/api/v1/models"
     headers = {"Authorization": f"Bearer {api_key}"}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=(10, 60))
     if response.status_code != 200:
         raise Exception(f"Error: {response.status_code}")
 

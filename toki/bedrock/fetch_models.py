@@ -92,7 +92,7 @@ def _attributes(model_id: str, info: dict) -> Attr:
 
 
 def _fetch_models() -> dict[str, Attr]:
-    with urlopen(_MODELS_URL) as response:
+    with urlopen(_MODELS_URL, timeout=60) as response:
         metadata = json.load(response)
     models: dict[str, Attr] = {}
     for key, info in metadata.items():

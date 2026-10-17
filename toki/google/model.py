@@ -18,6 +18,10 @@ _GOOGLE_CACHE_DEFAULT_TTL = 3600
 _GOOGLE_CACHE_DEFAULT_MIN_TOKENS = 4096
 _GOOGLE_CACHE_DEFAULT_REFRESH_DELTA = 4096
 _GOOGLE_CACHE_DEFAULT_REFRESH_BUFFER = 60
+# Per-request timeout (seconds) for the google-genai client used for explicit
+# cache creation; the SDK default is no timeout. Cache creation is
+# best-effort, so a timeout just falls back to a non-cached call.
+_GOOGLE_CACHE_CREATE_TIMEOUT = 120
 
 
 def _toki_messages_to_genai(messages: list[TokiMessage]) -> tuple[str | None, list[dict]]:
@@ -122,7 +126,8 @@ class _GoogleCacheManager:
                 "google-genai is required for explicit caching on GoogleModel. "
                 "Install with `pip install toki[google]`."
             ) from e
-        self._client = genai.Client(api_key=self._api_key)
+        # HttpOptions.timeout is in milliseconds
+        self._client = genai.Client(api_key=self._api_key, http_options={"timeout": _GOOGLE_CACHE_CREATE_TIMEOUT * 1000})
         return self._client
 
     def _is_alive(self, entry) -> bool:

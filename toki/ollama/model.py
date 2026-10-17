@@ -3,6 +3,7 @@ import warnings
 from typing import Any, AsyncIterator, Iterator, Literal, Sequence
 from uuid import uuid4
 
+import httpx
 from ollama import AsyncClient, Client, ProgressResponse
 from tqdm import tqdm
 
@@ -24,6 +25,15 @@ from ..model import (
     _unwrap_tools,
 )
 from .models import OllamaModelName, attributes_map
+
+
+# Network timeouts, in seconds (`None` = no limit). The ollama client defaults
+# to no timeout at all, so an unreachable `host=` (e.g. a remote daemon behind
+# a black-holed route) hangs forever. Bound connection setup only by default:
+# local generation, first-call model loads, and pulls can legitimately take
+# many minutes, so reads stay unbounded unless the caller opts in.
+_OLLAMA_CONNECT_TIMEOUT_DEFAULT = 10.0
+_OLLAMA_READ_TIMEOUT_DEFAULT = None
 
 
 def _normalize_model_name(model: str) -> str:
@@ -86,12 +96,26 @@ class OllamaModel(BaseModel):
     On construction, checks whether `model` is already pulled and pulls it (with a
     tqdm progress bar) if not. Subsequent `complete()` / `acomplete()` calls go to
     the daemon's `/api/chat` endpoint via the official `ollama` python client.
+
+    `connect_timeout` (default 10s) bounds connecting to the daemon;
+    `read_timeout` (default `None`, unbounded) bounds silence from it, which
+    covers model loads and non-streaming generation. Timeouts raise the
+    underlying `httpx.TimeoutException` subclass.
     """
 
-    def __init__(self, model: OllamaModelName | str, *, host: str | None = None):
+    def __init__(
+        self,
+        model: OllamaModelName | str,
+        *,
+        host: str | None = None,
+        connect_timeout: float | None = _OLLAMA_CONNECT_TIMEOUT_DEFAULT,
+        read_timeout: float | None = _OLLAMA_READ_TIMEOUT_DEFAULT,
+    ):
         super().__init__()
         self.model = model
-        client_kwargs: dict = {"host": host} if host is not None else {}
+        client_kwargs: dict = {"timeout": httpx.Timeout(read_timeout, connect=connect_timeout)}
+        if host is not None:
+            client_kwargs["host"] = host
         self._client = Client(**client_kwargs)
         self._async_client = AsyncClient(**client_kwargs)
         self._warned_streaming_tools = False

@@ -49,7 +49,7 @@ def test_fetch_models_uses_public_converse_metadata(monkeypatch):
     monkeypatch.setattr(
         fetch_models,
         "urlopen",
-        lambda url: _response(metadata),
+        lambda url, timeout: _response(metadata),
     )
 
     models = fetch_models._fetch_models()
@@ -82,7 +82,7 @@ def test_create_models_file_needs_no_aws_credentials(monkeypatch, tmp_path):
     monkeypatch.setattr(
         fetch_models,
         "urlopen",
-        lambda url: _response(metadata),
+        lambda url, timeout: _response(metadata),
     )
     output = tmp_path / "models.py"
 
