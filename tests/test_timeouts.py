@@ -63,13 +63,15 @@ def session_post(monkeypatch):
 
 @pytest.fixture
 def httpx_clients(monkeypatch):
-    """Swap `httpx.Client` / `httpx.AsyncClient` for subclasses that record the
-    `timeout` they were built with and answer from a `MockTransport`."""
+    """Swap `httpx.Client` / `httpx.AsyncClient` for subclasses answering from a
+    `MockTransport`. Records the effective timeout of every request (client
+    default or per-request override) and every client constructed."""
     timeouts: list[httpx.Timeout] = []
-    state: dict = {"exc": None}
+    state: dict = {"exc": None, "clients": []}
     real_client, real_async_client = httpx.Client, httpx.AsyncClient
 
     def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(httpx.Timeout(**request.extensions["timeout"]))
         if state["exc"] is not None:
             raise state["exc"](request)
         body = json.loads(request.content)
@@ -78,14 +80,14 @@ def httpx_clients(monkeypatch):
         return httpx.Response(200, json=BLOCKING_BODY)
 
     class RecordingClient(real_client):
-        def __init__(self, *, timeout, **kwargs):
-            timeouts.append(timeout)
-            super().__init__(timeout=timeout, transport=httpx.MockTransport(handler), **kwargs)
+        def __init__(self, **kwargs):
+            state["clients"].append(self)
+            super().__init__(transport=httpx.MockTransport(handler), **kwargs)
 
     class RecordingAsyncClient(real_async_client):
-        def __init__(self, *, timeout, **kwargs):
-            timeouts.append(timeout)
-            super().__init__(timeout=timeout, transport=httpx.MockTransport(handler), **kwargs)
+        def __init__(self, **kwargs):
+            state["clients"].append(self)
+            super().__init__(transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(httpx, "Client", RecordingClient)
     monkeypatch.setattr(httpx, "AsyncClient", RecordingAsyncClient)
@@ -223,6 +225,37 @@ async def test_openrouter_count_tokens_online_uses_configured_timeouts(httpx_cli
     assert model.count_tokens(MESSAGES) == 3
     assert await model.acount_tokens(MESSAGES) == 3
     assert [(t.connect, t.read) for t in timeouts] == [(5, 111), (5, 111)]
+
+
+def test_openrouter_count_tokens_reuses_one_client_per_instance(httpx_clients, monkeypatch):
+    timeouts, state = httpx_clients
+    model = OpenRouterModel("openai/gpt-4o-mini", api_key="dummy")
+    assert model.count_tokens(MESSAGES) == 3
+    model.read_timeout = 222  # per-request timeouts follow attribute changes
+    assert model.count_tokens(MESSAGES) == 3
+    assert len(state["clients"]) == 1
+    assert [t.read for t in timeouts] == [or_model._OPENROUTER_READ_TIMEOUT_DEFAULT, 222]
+    assert not state["clients"][0].is_closed
+
+    # a different instance gets its own client
+    OpenRouterModel("openai/gpt-4o-mini", api_key="dummy").count_tokens(MESSAGES)
+    assert len(state["clients"]) == 2
+
+    # after a fork the child builds fresh clients instead of reusing the parent's sockets
+    session_before = model._session()
+    real_pid = or_model.os.getpid()
+    monkeypatch.setattr(or_model.os, "getpid", lambda: real_pid + 1)
+    model.count_tokens(MESSAGES)
+    assert len(state["clients"]) == 3
+    assert model._session() is not session_before
+
+
+def test_openrouter_count_tokens_sync_timeout_is_clear(httpx_clients):
+    _, state = httpx_clients
+    state["exc"] = lambda request: httpx.ConnectTimeout("", request=request)
+    model = OpenRouterModel("openai/gpt-4o-mini", api_key="dummy", connect_timeout=6)
+    with pytest.raises(httpx.ConnectTimeout, match=r"connect_timeout=6s"):
+        model.count_tokens(MESSAGES)
 
 
 @pytest.mark.parametrize(

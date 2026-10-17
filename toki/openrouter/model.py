@@ -184,9 +184,10 @@ class OpenRouterModel(BaseModel):
     A timeout raises the transport's own exception type (`requests.ConnectTimeout`
     / `requests.ReadTimeout` on the sync path, `httpx.ConnectTimeout` /
     `httpx.ReadTimeout` etc. on the async path) with a message naming the
-    limit that fired. Sync calls reuse pooled keep-alive connections from a
-    per-instance `requests.Session`, so only a new connection pays a
-    connect-timeout fallback.
+    limit that fired. Sync calls reuse pooled keep-alive connections (a
+    per-instance `requests.Session` for completions, a per-instance
+    `httpx.Client` for online `count_tokens`), so only a new connection pays
+    a connect-timeout fallback.
     """
 
     def __init__(
@@ -212,10 +213,11 @@ class OpenRouterModel(BaseModel):
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
         self.stream_read_timeout = stream_read_timeout
-        # created lazily by `_session()`; tagged with the creating pid so a
-        # forked child never shares the parent's pooled sockets
+        # created lazily by `_session()` / `_count_client()`; tagged with the
+        # creating pid so a forked child never shares the parent's pooled sockets
         self._requests_session: requests.Session | None = None
-        self._requests_session_pid: int | None = None
+        self._httpx_client: httpx.Client | None = None
+        self._clients_pid: int | None = None
         self._cache_state = _CacheState(min_cache_size_estimate=_OPENROUTER_MIN_CACHE_TOKENS)
         if cache is not None and self._cache_route() is None:
             warnings.warn(
@@ -316,8 +318,10 @@ class OpenRouterModel(BaseModel):
                 safety_factor=safety_factor,
             )
         payload = _build_count_payload(self.model, wire_messages, wire_tools)
-        with self._clarify_timeouts(stream=False), httpx.Client(timeout=self._httpx_timeout(stream=False)) as client:
-            r = client.post(_API_URL, headers=self._headers(stream=False), json=payload)
+        with self._clarify_timeouts(stream=False):
+            r = self._count_client().post(
+                _API_URL, headers=self._headers(stream=False), json=payload, timeout=self._httpx_timeout(stream=False)
+            )
             r.raise_for_status()
             data = r.json()
         return _prompt_tokens_from_count_response(data)
@@ -459,13 +463,34 @@ class OpenRouterModel(BaseModel):
         so the only shared mutable state is urllib3's connection pool and
         requests' cookie jar, both lock-protected; concurrent calls from
         several threads on one model are fine."""
-        pid = os.getpid()
-        if self._requests_session is None or self._requests_session_pid != pid:
+        self._drop_clients_after_fork()
+        if self._requests_session is None:
             session = requests.Session()
             session.mount("https://", HTTPAdapter(pool_maxsize=_OPENROUTER_POOL_MAXSIZE))
             self._requests_session = session
-            self._requests_session_pid = pid
         return self._requests_session
+
+    def _count_client(self) -> httpx.Client:
+        """Per-instance `httpx.Client` for sync online `count_tokens`, kept on
+        httpx so it raises the same exception types as before (and as
+        `acount_tokens`). Timeouts are passed per request, so changes to the
+        timeout attributes apply. Thread-safe; lazily created and re-created
+        after `os.fork()` like `_session()`. The async paths still open a
+        client per call: an `httpx.AsyncClient`'s pool is bound to the event
+        loop it first ran on."""
+        self._drop_clients_after_fork()
+        if self._httpx_client is None:
+            self._httpx_client = httpx.Client(limits=httpx.Limits(max_keepalive_connections=_OPENROUTER_POOL_MAXSIZE))
+        return self._httpx_client
+
+    def _drop_clients_after_fork(self) -> None:
+        # Forget (without closing) clients inherited across a fork: their
+        # pooled sockets belong to the parent's connections.
+        pid = os.getpid()
+        if self._clients_pid != pid:
+            self._requests_session = None
+            self._httpx_client = None
+            self._clients_pid = pid
 
     def _requests_timeout(self, *, stream: bool) -> tuple[float | None, float | None]:
         return (self.connect_timeout, self.stream_read_timeout if stream else self.read_timeout)
